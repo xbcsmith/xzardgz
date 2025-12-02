@@ -1,13 +1,15 @@
 # xzardgz
 
-**Autonomous AI agent for documentation generation using the Diataxis framework.**
+**Autonomous AI agent for documentation generation using the Diataxis
+framework.**
 
-[![CI](https://github.com/xbcsmith/xzardgz/workflows/CI/badge.svg)](https://github.com/xbcsmith/xzardgz/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Overview
 
-xzardgz is a Rust-based autonomous AI agent that helps you generate high-quality documentation following the [Diataxis](https://diataxis.fr/) framework. It analyzes your codebase and generates documentation across four categories:
+xzardgz is a Rust-based autonomous AI agent that helps you generate high-quality
+documentation following the [Diataxis](https://diataxis.fr/) framework. It
+analyzes your codebase and generates documentation across four categories:
 
 - **Tutorials**: Learning-oriented guides
 - **How-to guides**: Problem-solving oriented instructions
@@ -16,7 +18,8 @@ xzardgz is a Rust-based autonomous AI agent that helps you generate high-quality
 
 ## Features
 
-- 🤖 **AI-Powered**: Leverages AI providers (Ollama, GitHub Copilot) for content generation
+- 🤖 **AI-Powered**: Leverages AI providers (Ollama, GitHub Copilot) for content
+  generation
 - 📚 **Diataxis Framework**: Follows best practices for documentation structure
 - 🔄 **Workflow Engine**: Execute multi-step documentation generation workflows
 - 🔍 **Repository Analysis**: Scans and analyzes code structure
@@ -105,7 +108,8 @@ xzardgz chat
 
 ## Configuration
 
-See [Configuration Reference](docs/reference/configuration.md) for detailed configuration options.
+See [Configuration Reference](docs/reference/configuration.md) for detailed
+configuration options.
 
 ## Documentation
 
@@ -143,7 +147,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
+for details.
 
 ## Acknowledgments
 
