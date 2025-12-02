@@ -1,0 +1,32 @@
+name: "Repository Analysis"
+description: "Analyze repository and generate comprehensive documentation"
+repository: "."
+
+steps:
+  - id: "scan"
+    description: "Scan repository structure"
+    action:
+      type: "ScanRepository"
+    dependencies: []
+
+  - id: "gen_explanation"
+    description: "Generate architecture explanation"
+    action:
+      type: "GenerateDocumentation"
+      category: "explanation"
+      topic: "Architecture Overview"
+    dependencies: ["scan"]
+
+  - id: "gen_reference"
+    description: "Generate API reference"
+    action:
+      type: "GenerateDocumentation"
+      category: "reference"
+      topic: "API Reference"
+    dependencies: ["scan"]
+
+deliverables:
+  - type: "Documentation"
+    path: "docs/explanation/architecture_overview.md"
+  - type: "Documentation"
+    path: "docs/reference/api_reference.md"

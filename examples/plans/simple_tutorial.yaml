@@ -1,0 +1,16 @@
+name: "Simple Tutorial Generation"
+description: "Generate a simple tutorial document"
+repository: "."
+
+steps:
+  - id: "gen_tutorial"
+    description: "Generate getting started tutorial"
+    action:
+      type: "GenerateDocumentation"
+      category: "tutorial"
+      topic: "Getting Started with xzardgz"
+    dependencies: []
+
+deliverables:
+  - type: "Documentation"
+    path: "docs/tutorials/getting_started_with_xzardgz.md"

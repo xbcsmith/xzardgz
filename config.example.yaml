@@ -1,0 +1,16 @@
+provider:
+  provider_type: "ollama"
+  model: "qwen2.5-coder"
+
+agent:
+  max_turns: 10
+  timeout_seconds: 600
+
+repository:
+  ignore_patterns:
+    - "target"
+    - ".git"
+    - "node_modules"
+
+documentation:
+  output_dir: "docs"

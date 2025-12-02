@@ -1,0 +1,15 @@
+name: Sample Plan
+description: A sample workflow plan
+steps:
+  - id: step1
+    description: Scan the repository
+    action:
+      type: scan_repository
+      params: null
+  - id: step2
+    description: Analyze code
+    action:
+      type: analyze_code
+      params: null
+    dependencies:
+      - step1
