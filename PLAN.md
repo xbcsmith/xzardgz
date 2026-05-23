@@ -98,33 +98,32 @@ Implementation Phases sections follow the following pattern:
 
 ### Phase 1: Core Implementation
 
-#### Task 1.1 Foundation Work
+#### 1.1 Foundation Work
 
-#### Task 1.2 Add Foundation Functionality
+#### 1.2 Add Foundation Functionality
 
-#### Task 1.3 Integrate Foundation Work
+#### 1.3 Integrate Foundation Work
 
-#### Task 1.4 Testing Requirements
+#### 1.4 Testing Requirements
 
-#### Task 1.5 Deliverables
+#### 1.5 Deliverables
 
-#### Task 1.6 Success Criteria
+#### 1.6 Success Criteria
 
 ### Phase 2: Feature Implementation
 
 #### 2.1 Feature Work
 
-#### Task 2.2 Integrate Feature
+#### 2.2 Integrate Feature
 
-#### Task 2.3 Configuration Updates
+#### 2.3 Configuration Updates
 
-#### Task 2.4 Testing requirements
+#### 2.4 Testing requirements
 
-#### Task 2.5 Deliverables
+#### 2.5 Deliverables
 
-#### Task 2.6 Success Criteria
+#### 2.6 Success Criteria
 ```
-
 
 ## General Rules
 
@@ -139,6 +138,7 @@ The following general rules should be followed on all projects:
 - **Documentation** preference is markdown and should follow the Diataxis Framework
 - **ULID** prefered over UUID for unique identifiers
 - **RFC-3339 Format** prefered for timestamps, use proper format like `2025-11-07T18:12:07.982682Z
+- **Sanitize Inputs and Outputs** for all service interactions
 
 ## Architecture
 
@@ -159,34 +159,3 @@ All services and servers should have the following items:
 - CLI
 - OpenAPI document (and endpoint for a document)
 - README.md
-
-## Documentation
-
-### Diátaxis Structure
-
-```
-pipeline-documentation/
-├── tutorials/
-│   ├── quickstart.md
-│   └── service-name/
-│       └── first-deployment.md
-├── how-to-guides/
-│   └── service-name/
-│       ├── configure-auth.md
-│       └── scale-horizontally.md
-├── reference/
-|   ├── architecture.md
-│   └── service-name/
-│       ├── api.md
-│       ├── configuration.md
-│       └── cli.md
-└── explanation/
-    ├── implementations.md
-    └── service-name/
-        └── design-decisions.md
-```
-
-## Copyright
-
-We will follow the [SPDX Spec](https://spdx.github.io/spdx-spec/) for copyright
-and licensing information.
