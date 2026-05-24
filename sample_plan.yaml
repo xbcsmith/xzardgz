@@ -1,28 +1,27 @@
+version: "1"
 name: "Sample Technical Review"
 description: "Scan the repository and run the technical review plugin"
 repository: "."
+branch: ~
+workspace: ~
 
 steps:
-  - id: "scan"
-    description: "Create repository scan artifact"
-    action:
-      type: "scan_repository"
-      params: null
+  - id: technical_review
+    description: "Run technical review plugin"
+    plugin: technical-review
     dependencies: []
+    report_formats:
+      - markdown
+      - json
+    max_findings: 50
+    severity_threshold: low
 
-  - id: "technical_review"
-    description: "Run technical review"
-    action:
-      type: "run_plugin"
-      params:
-        plugin: "technical-review"
-    dependencies:
-      - "scan"
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - markdown
+    - json
+  overwrite: true
 
-deliverables:
-  - name: "Technical Review Report"
-    description: "Markdown report produced by the technical review plugin"
-    path: ".xzardgz/reports/technical_review.md"
-  - name: "Technical Review Findings"
-    description: "JSON findings produced by the technical review plugin"
-    path: ".xzardgz/reports/technical_review.json"
+dry_run: false
+resume: false

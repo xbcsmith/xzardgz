@@ -1,5 +1,5 @@
 use clap::Parser;
-use xzardgz::cli::{AuthCommands, Cli, Commands};
+use xzardgz::cli::{Cli, Commands};
 use xzardgz::commands;
 use xzardgz::error::XzardgzError;
 
@@ -9,18 +9,12 @@ async fn main() -> Result<(), XzardgzError> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Run { plan }) => commands::run::execute(plan).await,
-        Some(Commands::Scan { repository }) => commands::scan::execute(repository).await,
-        Some(Commands::Plugin { name }) => commands::plugin::execute(name).await,
-        Some(Commands::Watch) => commands::watch::execute().await,
-        Some(Commands::Auth { command }) => match command {
-            AuthCommands::Login => commands::auth::login().await,
-        },
-        Some(Commands::Prompts) => commands::prompts::execute().await,
-        Some(Commands::Mcp) => commands::mcp::execute().await,
-        None => {
-            println!("No command specified. Use --help for usage.");
-            Ok(())
-        }
+        Commands::Run(args) => commands::run::execute(args).await,
+        Commands::Scan(args) => commands::scan::execute(args).await,
+        Commands::Plugin { command } => commands::plugin::execute(command).await,
+        Commands::Watch(args) => commands::watch::execute(args).await,
+        Commands::Auth { command } => commands::auth::execute(command).await,
+        Commands::Prompts { command } => commands::prompts::execute(command).await,
+        Commands::Mcp { command } => commands::mcp::execute(command).await,
     }
 }

@@ -17,3 +17,6 @@ mod tool_tests;
 
 #[path = "unit/cli_tests.rs"]
 mod cli_tests;
+
+#[path = "unit/workflow_validation_tests.rs"]
+mod workflow_validation_tests;
