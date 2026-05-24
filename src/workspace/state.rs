@@ -248,6 +248,66 @@ impl WorkspaceState {
             PipelineError::Workspace(format!("failed to serialize workspace state: {}", e))
         })
     }
+
+    /// Applies git metadata collected from a repository checkout to this state.
+    ///
+    /// Updates the repository URL (when the metadata includes a remote origin),
+    /// the repository hash, the local checkout path, the current branch name,
+    /// the target branch, and the HEAD commit used by scan artifacts. The
+    /// `updated_at` timestamp is always refreshed.
+    ///
+    /// Fields are only overwritten when the corresponding `metadata` field is
+    /// `Some(_)`, so callers can apply partial metadata without clobbering
+    /// previously recorded values.
+    ///
+    /// # Arguments
+    ///
+    /// * `metadata` - Git metadata collected by [`crate::git::ops::GitRepository::metadata`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::workspace::state::WorkspaceState;
+    /// use xzardgz::workspace::id::{new_workspace_id, hash_repository};
+    /// use xzardgz::git::metadata::GitMetadata;
+    ///
+    /// let mut state = WorkspaceState::new(
+    ///     new_workspace_id(),
+    ///     "https://github.com/example/repo".to_string(),
+    ///     hash_repository("https://github.com/example/repo"),
+    ///     None,
+    ///     None,
+    /// );
+    ///
+    /// let meta = GitMetadata::new(
+    ///     None,
+    ///     None,
+    ///     "/tmp/repo".to_string(),
+    ///     Some("main".to_string()),
+    ///     None,
+    ///     Some("abc123".to_string()),
+    ///     false,
+    /// );
+    ///
+    /// state.apply_git_metadata(&meta);
+    /// assert_eq!(state.branch_name.as_deref(), Some("main"));
+    /// assert_eq!(state.scan_artifact_head_commit.as_deref(), Some("abc123"));
+    /// ```
+    pub fn apply_git_metadata(&mut self, metadata: &crate::git::metadata::GitMetadata) {
+        if let Some(ref url) = metadata.repository_url {
+            self.repository_url = url.clone();
+        }
+        if let Some(ref hash) = metadata.repository_hash {
+            self.repository_hash = hash.clone();
+        }
+        self.local_repository_path = Some(metadata.local_repository_path.clone());
+        self.branch_name = metadata.branch_name.clone();
+        if let Some(ref target) = metadata.target_branch {
+            self.target_branch = Some(target.clone());
+        }
+        self.scan_artifact_head_commit = metadata.head_commit.clone();
+        self.updated_at = now_utc();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +522,164 @@ mod tests {
         assert!(
             r.diagnostics.is_empty(),
             "serde default: diagnostics should be empty"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // apply_git_metadata
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_apply_git_metadata_updates_branch_name() {
+        let mut state = make_state();
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/repo".to_string(),
+            Some("feature-x".to_string()),
+            None,
+            None,
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.branch_name.as_deref(),
+            Some("feature-x"),
+            "branch_name should be updated from metadata"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_updates_local_repository_path() {
+        let mut state = make_state();
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/my_local_repo".to_string(),
+            None,
+            None,
+            None,
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.local_repository_path.as_deref(),
+            Some("/tmp/my_local_repo"),
+            "local_repository_path should be updated from metadata"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_updates_head_commit() {
+        let mut state = make_state();
+        let sha = "a".repeat(40);
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/repo".to_string(),
+            None,
+            None,
+            Some(sha.clone()),
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.scan_artifact_head_commit.as_deref(),
+            Some(sha.as_str()),
+            "scan_artifact_head_commit should be updated from metadata"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_with_remote_url_overwrites_repository_url() {
+        let mut state = make_state();
+        let new_url = "https://github.com/example/new-repo".to_string();
+        let meta = crate::git::metadata::GitMetadata::new(
+            Some(new_url.clone()),
+            Some("newhash".to_string()),
+            "/tmp/repo".to_string(),
+            None,
+            None,
+            None,
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.repository_url, new_url,
+            "repository_url should be updated when metadata has remote"
+        );
+        assert_eq!(
+            state.repository_hash, "newhash",
+            "repository_hash should be updated when metadata has hash"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_without_remote_preserves_existing_url() {
+        let mut state = make_state();
+        let original_url = state.repository_url.clone();
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/repo".to_string(),
+            None,
+            None,
+            None,
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.repository_url, original_url,
+            "repository_url should not change when metadata has no remote"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_updates_target_branch_when_present() {
+        let mut state = make_state();
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/repo".to_string(),
+            Some("feature".to_string()),
+            Some("main".to_string()),
+            None,
+            false,
+        );
+
+        state.apply_git_metadata(&meta);
+
+        assert_eq!(
+            state.target_branch.as_deref(),
+            Some("main"),
+            "target_branch should be updated from metadata"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_refreshes_updated_at() {
+        let mut state = make_state();
+        let original_updated_at = state.updated_at;
+
+        // Small sleep to ensure timestamp difference.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let meta = crate::git::metadata::GitMetadata::default();
+        state.apply_git_metadata(&meta);
+
+        assert!(
+            state.updated_at >= original_updated_at,
+            "updated_at should be refreshed after applying metadata"
         );
     }
 }

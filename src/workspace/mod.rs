@@ -389,6 +389,53 @@ impl WorkspaceManager {
     pub fn repository_hash(&self) -> &str {
         &self.state.repository_hash
     }
+
+    /// Applies git metadata to the workspace state and persists to disk.
+    ///
+    /// Delegates to [`WorkspaceState::apply_git_metadata`] to update all
+    /// git-related fields (remote URL, hash, local path, branch names, HEAD
+    /// commit), then calls [`Self::save`] to write the updated state file.
+    ///
+    /// # Arguments
+    ///
+    /// * `metadata` - Git metadata collected by
+    ///   [`crate::git::ops::GitRepository::metadata`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Workspace`] if the updated state cannot be
+    /// written to disk.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use xzardgz::workspace::WorkspaceManager;
+    /// use xzardgz::git::metadata::GitMetadata;
+    ///
+    /// let mut manager = WorkspaceManager::create(
+    ///     "/tmp/workspaces",
+    ///     "https://github.com/example/repo",
+    ///     Some("main".to_string()),
+    ///     None,
+    /// ).unwrap();
+    ///
+    /// let meta = GitMetadata::new(
+    ///     None, None,
+    ///     "/tmp/repo".to_string(),
+    ///     Some("main".to_string()),
+    ///     None,
+    ///     Some("deadbeef".to_string()),
+    ///     false,
+    /// );
+    /// manager.apply_git_metadata(&meta).unwrap();
+    /// ```
+    pub fn apply_git_metadata(
+        &mut self,
+        metadata: &crate::git::metadata::GitMetadata,
+    ) -> Result<()> {
+        self.state.apply_git_metadata(metadata);
+        self.save()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,6 +860,87 @@ mod tests {
         assert!(
             manager.is_complete(),
             "workspace should report as complete after Complete transition"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // apply_git_metadata
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_apply_git_metadata_persists_branch_to_state_file() {
+        let dir = temp_dir();
+        let mut manager =
+            WorkspaceManager::create(root(&dir), "https://example.com/repo", None, None)
+                .expect("SAFETY: create should succeed");
+
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            "/tmp/repo".to_string(),
+            Some("main".to_string()),
+            None,
+            Some("deadbeefdeadbeef".to_string()),
+            false,
+        );
+
+        manager
+            .apply_git_metadata(&meta)
+            .expect("SAFETY: apply_git_metadata should succeed");
+
+        assert_eq!(
+            manager.state.branch_name.as_deref(),
+            Some("main"),
+            "branch_name should be updated in manager state"
+        );
+        assert_eq!(
+            manager.state.scan_artifact_head_commit.as_deref(),
+            Some("deadbeefdeadbeef"),
+            "head commit should be persisted"
+        );
+
+        // Reload from disk and verify persistence.
+        let loaded = WorkspaceManager::load(root(&dir), manager.id())
+            .expect("SAFETY: reload should succeed");
+        assert_eq!(
+            loaded.state.branch_name.as_deref(),
+            Some("main"),
+            "branch_name should survive a reload cycle"
+        );
+    }
+
+    #[test]
+    fn test_apply_git_metadata_updates_local_path_on_disk() {
+        let dir = temp_dir();
+        let mut manager = WorkspaceManager::create(
+            root(&dir),
+            "https://example.com/local-path-test",
+            None,
+            None,
+        )
+        .expect("SAFETY: create should succeed");
+
+        let local_path = "/tmp/checked_out_repo".to_string();
+        let meta = crate::git::metadata::GitMetadata::new(
+            None,
+            None,
+            local_path.clone(),
+            None,
+            None,
+            None,
+            false,
+        );
+
+        manager
+            .apply_git_metadata(&meta)
+            .expect("SAFETY: apply_git_metadata should succeed");
+
+        let loaded = WorkspaceManager::load(root(&dir), manager.id())
+            .expect("SAFETY: reload should succeed");
+        assert_eq!(
+            loaded.state.local_repository_path.as_deref(),
+            Some(local_path.as_str()),
+            "local_repository_path should persist to disk"
         );
     }
 }
