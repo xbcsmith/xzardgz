@@ -1,15 +1,28 @@
-name: Sample Plan
-description: A sample workflow plan
+name: "Sample Technical Review"
+description: "Scan the repository and run the technical review plugin"
+repository: "."
+
 steps:
-  - id: step1
-    description: Scan the repository
+  - id: "scan"
+    description: "Create repository scan artifact"
     action:
-      type: scan_repository
+      type: "scan_repository"
       params: null
-  - id: step2
-    description: Analyze code
+    dependencies: []
+
+  - id: "technical_review"
+    description: "Run technical review"
     action:
-      type: analyze_code
-      params: null
+      type: "run_plugin"
+      params:
+        plugin: "technical-review"
     dependencies:
-      - step1
+      - "scan"
+
+deliverables:
+  - name: "Technical Review Report"
+    description: "Markdown report produced by the technical review plugin"
+    path: ".xzardgz/reports/technical_review.md"
+  - name: "Technical Review Findings"
+    description: "JSON findings produced by the technical review plugin"
+    path: ".xzardgz/reports/technical_review.json"

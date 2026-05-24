@@ -67,8 +67,8 @@ impl WorkflowExecutor {
                 println!("Analyzing code...");
                 Ok(())
             }
-            Action::GenerateDocumentation { category } => {
-                println!("Generating documentation for category: {:?}", category);
+            Action::RunPlugin { plugin } => {
+                println!("Running plugin: {}", plugin);
                 Ok(())
             }
             Action::ExecuteCommand { command } => {

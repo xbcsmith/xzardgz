@@ -2759,7 +2759,7 @@ Create a step-by-step guide covering:
 
 #### Task 4.5: Success Criteria
 
-- Documentation follows Diataxis framework
+- Documentation follows project documentation organization rules
 - All environment variables documented
 - Code examples are complete and runnable
 - Error scenarios are covered

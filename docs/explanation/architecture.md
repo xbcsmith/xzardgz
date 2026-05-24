@@ -2,574 +2,249 @@
 
 ## Overview
 
-XZardgz is an autonomous AI agent CLI application written in Rust that executes workflows from structured plans. It connects to AI providers (GitHub Copilot or Ollama) to perform repository analysis and automated documentation generation following the Diataxis framework.
+XZardgz is a generic AI workflow harness for repository-oriented automation. It
+loads configuration, prepares a workspace, scans a repository, resolves provider
+and model settings, runs plugins, writes reports, and can process tasks from a
+watcher queue.
 
-## System Architecture
+The target command surface is `run`, `scan`, `plugin`, `watch`, `auth`,
+`prompts`, and `mcp`.
 
-### High-Level Architecture
+## System Context
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        XZardgz CLI                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐      ┌─────────────┐   ┌──────────────┐ │
-│  │   CLI Layer  │────▶ │ Agent Core  │──▶│  Workflow    │ │
-│  │   (clap)     │      │             │   │  Engine      │ │
-│  └──────────────┘      └─────────────┘   └──────────────┘ │
-│                               │                            │
-│                               ▼                            │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │           Provider Abstraction Layer                 │ │
-│  │  ┌─────────────────┐      ┌─────────────────┐       │ │
-│  │  │ Copilot Provider│      │ Ollama Provider │       │ │
-│  │  └─────────────────┘      └─────────────────┘       │ │
-│  └──────────────────────────────────────────────────────┘ │
-│                               │                            │
-│                               ▼                            │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │          Repository Analysis & Tools                 │ │
-│  │  ┌──────────┐  ┌──────────┐  ┌─────────────┐       │ │
-│  │  │ Git Scan │  │ File I/O │  │ Doc Gen     │       │ │
-│  │  └──────────┘  └──────────┘  └─────────────┘       │ │
-│  └──────────────────────────────────────────────────────┘ │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+XZardgz sits between repositories, AI providers, workflow plugins, local
+workspace state, optional MCP servers, and optional Kafka topics.
+
+```text
+User or watcher task
+        |
+        v
+CLI command router
+        |
+        v
+Workflow harness -- configuration, auth, prompts, model selection
+        |
+        +--> Repository scanner --> scan artifact
+        +--> Plugin runtime -----> findings and reports
+        +--> MCP client ---------> allowed external tools
+        +--> Watcher publisher --> result messages
 ```
 
 ## Core Components
 
-### 1. CLI Layer
+### CLI Layer
 
-**Purpose**: User interface and command routing
+The CLI parses command arguments and routes each command to a thin handler.
+Handlers should translate user input into reusable workflow operations instead
+of embedding business logic.
 
-**Responsibilities**:
-- Parse command-line arguments and flags
-- Validate input parameters
-- Display progress and results
-- Handle interactive prompts (optional)
-- Load and parse plan files (JSON, YAML, Markdown)
+Commands:
 
-**Key Modules**:
-- `cli.rs` - CLI parser using `clap`
-- `commands/` - Command handlers
-- `config.rs` - Configuration management
+- `run`: Execute a local plan or direct plugin invocation.
+- `scan`: Build a structured repository scan artifact.
+- `plugin`: List, inspect, validate, or run workflow plugins.
+- `watch`: Process queued tasks and publish results.
+- `auth`: Manage provider credentials.
+- `prompts`: Manage prompt templates.
+- `mcp`: Validate MCP servers and inspect tools.
 
-**Dependencies**:
-- `clap` - Command-line argument parsing
-- `serde` - Serialization/deserialization
-- `serde_json`, `serde_yaml` - Format support
+### Configuration System
 
-### 2. Agent Core
+Configuration is loaded from `.yaml` files, environment variables, and CLI
+overrides. The first-release model is strict: unknown legacy sections are
+rejected, and only workflow harness sections are accepted.
 
-**Purpose**: Orchestrate AI-powered autonomous execution
+Primary sections include:
 
-**Responsibilities**:
-- Manage agent lifecycle
-- Maintain conversation context
-- Execute agent decision loop
-- Handle error recovery
-- Track execution state
+- `provider` and `provider_defaults`
+- Provider-specific sections such as `openai`, `anthropic`, `ollama`, and
+  `copilot`
+- `scanner`, `git`, and `workspace`
+- `plugins`, `technical_review`, and `security_review`
+- `governance`
+- `watcher`, `kafka`, `topics`, and `matcher`
+- `prompts`, `mcp`, and `subagent`
+- `model_metadata` and `model_selection`
+- `scan_output`, `reports`, `trace_transcript`, and `project`
 
-**Key Modules**:
-- `agent/mod.rs` - Main agent implementation
-- `agent/state.rs` - State management
-- `agent/context.rs` - Conversation context
-- `agent/executor.rs` - Execution engine
+### Workspace Management
 
-**Architecture Pattern**: Based on goose Agent pattern
-```rust
-pub struct Agent {
-    provider: Arc<dyn Provider>,
-    context: ConversationContext,
-    tools: Vec<Tool>,
-    config: AgentConfig,
-}
-```
+A workspace stores state for each workflow run. It records repository metadata,
+scan artifacts, selected provider and model information, plugin state, report
+paths, transcripts when enabled, watcher task metadata, and final status.
 
-### 3. Provider Abstraction Layer
+Workspace stages are intended to be incremental so interrupted work can be
+inspected or resumed where safe.
 
-**Purpose**: Unified interface to AI providers
+### Repository Scanner
 
-**Responsibilities**:
-- Abstract provider-specific APIs
-- Handle authentication
-- Manage streaming responses
-- Implement retry logic
-- Track token usage
+The scanner reads repository files, applies ignore rules, collects structure and
+metadata, and writes a scan artifact. Plugins consume the scan artifact rather
+than reimplementing repository discovery.
 
-**Key Modules**:
-- `providers/mod.rs` - Provider trait definition
-- `providers/copilot.rs` - GitHub Copilot integration
-- `providers/ollama.rs` - Ollama integration
-- `providers/factory.rs` - Provider instantiation
+The scan artifact supports local debugging, CI preflight checks, plugin
+development, and watcher troubleshooting.
 
-**Provider Trait**:
-```rust
-#[async_trait]
-pub trait Provider: Send + Sync {
-    fn metadata() -> ProviderMetadata;
-    fn get_name(&self) -> &str;
-    async fn complete(
-        &self,
-        messages: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Message, ProviderError>;
-}
-```
+### Provider and Model Layer
 
-### 4. Workflow Engine
+The provider layer abstracts OpenAI, Anthropic, Ollama, and Copilot. The model
+selection layer resolves provider defaults, workflow overrides, watcher task
+overrides, plugin requirements, and CLI flags into a concrete model decision.
 
-**Purpose**: Execute structured plans and workflows
-
-**Responsibilities**:
-- Parse plan documents (JSON, YAML, Markdown)
-- Validate plan structure
-- Execute workflow steps sequentially
-- Handle conditional logic
-- Report progress and results
-
-**Key Modules**:
-- `workflow/mod.rs` - Workflow engine
-- `workflow/plan.rs` - Plan data structures
-- `workflow/executor.rs` - Step execution
-- `workflow/parser.rs` - Plan parsing
-
-**Plan Structure**:
-```rust
-pub struct Plan {
-    pub name: String,
-    pub description: String,
-    pub steps: Vec<WorkflowStep>,
-    pub deliverables: Vec<Deliverable>,
-}
-
-pub struct WorkflowStep {
-    pub id: String,
-    pub description: String,
-    pub action: Action,
-    pub dependencies: Vec<String>,
-}
-```
-
-### 5. Repository Analysis
-
-**Purpose**: Scan and analyze repository contents
-
-**Responsibilities**:
-- Clone/access Git repositories
-- Traverse directory structure
-- Read and parse source files
-- Extract code metadata
-- Generate content summaries
-
-**Key Modules**:
-- `repository/mod.rs` - Repository interface
-- `repository/scanner.rs` - File system scanner
-- `repository/git.rs` - Git operations
-- `repository/analyzer.rs` - Content analysis
-
-**Dependencies**:
-- `git2` - Git operations
-- `ignore` - .gitignore handling
-- `walkdir` - Directory traversal
-
-### 6. Documentation Generator
-
-**Purpose**: Generate Diataxis-compliant documentation
-
-**Responsibilities**:
-- Generate tutorial documentation
-- Create how-to guides
-- Write explanation documents
-- Generate reference documentation
-- Organize output structure
-
-**Key Modules**:
-- `docgen/mod.rs` - Documentation generator
-- `docgen/diataxis.rs` - Diataxis framework
-- `docgen/templates.rs` - Document templates
-- `docgen/writer.rs` - File output
-
-**Diataxis Categories**:
-```rust
-pub enum DocCategory {
-    Tutorial,      // Learning-oriented
-    HowTo,         // Task-oriented
-    Explanation,   // Understanding-oriented
-    Reference,     // Information-oriented
-}
-
-pub struct DocTemplate {
-    pub category: DocCategory,
-    pub title: String,
-    pub sections: Vec<Section>,
-}
-```
-
-## Data Flow
-
-### Primary Workflow: Repository Documentation Generation
-
-```
-1. User Input
-   ↓
-2. Parse Plan (JSON/YAML/Markdown)
-   ↓
-3. Initialize Agent with Provider
-   ↓
-4. Execute Workflow Steps:
-   a. Clone/Access Repository
-   b. Scan Repository Contents
-   c. Analyze Code Structure
-   d. Generate Documentation Outline
-   e. Generate Content (via AI Provider)
-   f. Write Documentation Files
-   ↓
-5. Validate & Report Results
-```
-
-### Agent Execution Loop
-
-```
-1. Receive User Message/Instruction
-   ↓
-2. Build Context (system prompt + conversation history)
-   ↓
-3. Query AI Provider with Tools
-   ↓
-4. Process Response:
-   - If tool call → Execute tool → Add result to context → Loop
-   - If final response → Return to user
-   ↓
-5. Update Conversation History
-```
-
-## Module Structure
-
-```
-xzardgz/
-├── src/
-│   ├── main.rs                 # Entry point
-│   ├── lib.rs                  # Library root
-│   ├── cli.rs                  # CLI parser
-│   ├── config.rs               # Configuration
-│   ├── error.rs                # Error types
-│   │
-│   ├── agent/                  # Agent core
-│   │   ├── mod.rs
-│   │   ├── agent.rs           # Main agent
-│   │   ├── context.rs         # Conversation context
-│   │   ├── state.rs           # Agent state
-│   │   └── executor.rs        # Execution logic
-│   │
-│   ├── providers/              # AI providers
-│   │   ├── mod.rs
-│   │   ├── base.rs            # Provider trait
-│   │   ├── copilot.rs         # GitHub Copilot
-│   │   ├── ollama.rs          # Ollama
-│   │   ├── factory.rs         # Provider factory
-│   │   └── types.rs           # Shared types
-│   │
-│   ├── workflow/               # Workflow engine
-│   │   ├── mod.rs
-│   │   ├── plan.rs            # Plan structures
-│   │   ├── parser.rs          # Plan parsing
-│   │   ├── executor.rs        # Execution
-│   │   └── validator.rs       # Validation
-│   │
-│   ├── repository/             # Repository operations
-│   │   ├── mod.rs
-│   │   ├── scanner.rs         # File scanning
-│   │   ├── git.rs             # Git operations
-│   │   └── analyzer.rs        # Analysis
-│   │
-│   ├── docgen/                 # Documentation generation
-│   │   ├── mod.rs
-│   │   ├── diataxis.rs        # Framework
-│   │   ├── generator.rs       # Content generation
-│   │   ├── templates.rs       # Templates
-│   │   └── writer.rs          # File writing
-│   │
-│   └── tools/                  # Agent tools
-│       ├── mod.rs
-│       ├── file_ops.rs        # File operations
-│       ├── git_ops.rs         # Git operations
-│       └── doc_ops.rs         # Documentation ops
-│
-├── tests/                      # Integration tests
-├── examples/                   # Usage examples
-└── docs/                       # Documentation
-    ├── tutorials/
-    ├── how_to/
-    ├── explanation/
-    └── reference/
-```
-
-## Configuration
-
-### Configuration Sources (Priority Order)
-
-1. Command-line arguments
-2. Environment variables
-3. Configuration file (`~/.config/xzardgz/config.yaml`)
-4. Default values
-
-### Configuration Structure
-
-```yaml
-# ~/.config/xzardgz/config.yaml
-
-# AI Provider settings
-provider:
-  type: copilot  # or 'ollama'
-
-  # Copilot-specific
-  copilot:
-    model: gpt-4o
-
-  # Ollama-specific
-  ollama:
-    host: localhost:11434
-    model: qwen3
-
-# Agent settings
-agent:
-  max_turns: 50
-  timeout_seconds: 600
-  retry_attempts: 3
-
-# Repository settings
-repository:
-  clone_depth: 1
-  ignore_patterns:
-    - node_modules
-    - target
-    - .git
-
-# Documentation settings
-documentation:
-  output_dir: docs
-  categories:
-    - tutorials
-    - how_to
-    - explanation
-    - reference
-```
-
-## Error Handling
-
-### Error Types Hierarchy
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum XzardgzError {
-    #[error("Configuration error: {0}")]
-    Config(#[from] ConfigError),
-
-    #[error("Provider error: {0}")]
-    Provider(#[from] ProviderError),
-
-    #[error("Workflow error: {0}")]
-    Workflow(#[from] WorkflowError),
-
-    #[error("Repository error: {0}")]
-    Repository(#[from] RepositoryError),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-```
-
-### Error Handling Strategy
-
-1. **Recoverable Errors**: Retry with exponential backoff
-2. **User Errors**: Provide clear error messages and suggestions
-3. **System Errors**: Log detailed information and fail gracefully
-4. **Provider Errors**: Fallback or alternative approaches
-
-## Security Considerations
+Provider diagnostics are persisted so reports and watcher results can explain
+which model was used and whether a fallback occurred.
 
 ### Authentication
 
-- **GitHub Copilot**: OAuth 2.0 device flow
-- **Ollama**: Local or authenticated endpoint
+Authentication is managed through the `auth` command. The target behavior
+supports login, logout, status, validation, key setting, and key removal across
+all configured providers.
 
-### Data Privacy
+Secrets should be loaded from environment variables, keychains, or configured
+secret stores. Reports and logs must not include secret values.
 
-- No sensitive data logged
-- Credentials stored securely (system keychain)
-- Repository content processed locally when possible
+### Prompt System
 
-### Input Validation
+Prompt templates are externalized and resolved by a clear search order. The
+`prompts` command can export built-ins, validate prompt directories, show
+resolution order, list plugin templates, and render prompts with safe test
+context.
 
-- Sanitize all user inputs
-- Validate plan files before execution
-- Restrict file system access to designated paths
+### MCP Client
 
-## Performance Considerations
+The MCP client validates configured servers, discovers exposed tools, and allows
+safe tool calls only when tools are explicitly enabled. MCP integration is an
+extension point for plugin execution, not a replacement for local sandboxing.
 
-### Optimization Strategies
+### Plugin Runtime
 
-1. **Streaming Responses**: Process AI responses as they arrive
-2. **Concurrent Operations**: Parallel file scanning and analysis
-3. **Caching**: Cache repository metadata and analysis results
-4. **Token Management**: Optimize prompts to minimize token usage
+Plugins receive a workflow context, scan artifact, provider access, configured
+prompts, and an output writer. The first built-in plugin identifiers are:
 
-### Resource Limits
+- `technical-review`
+- `security-review`
 
-- Maximum conversation context: 100,000 tokens
-- Maximum file size for analysis: 1 MB
-- Repository size limit: 1 GB (configurable)
-- Concurrent operations: 4 (configurable)
+Plugin output is normalized into findings, diagnostics, artifacts, and reports.
+Security review can include SARIF output when configured.
+
+### Reports
+
+Reports collect plugin metadata, scan metadata, findings, diagnostics, provider
+selection details, artifact paths, and final status. Supported formats are
+configured per workflow or plugin.
+
+### Watcher Mode
+
+Watcher mode consumes Kafka task messages, validates matcher rules, rejects
+messages when matcher configuration is empty, executes accepted tasks through
+the workflow harness, and publishes result messages.
+
+Watcher results include status, report paths, finding counts, selected provider
+and model details, and structured diagnostics.
+
+## Data Flow
+
+### Local Plugin Workflow
+
+1. Parse CLI arguments or a plan file.
+2. Load configuration and apply overrides.
+3. Create or resume a workspace.
+4. Open or clone the target repository.
+5. Scan the repository and persist the scan artifact.
+6. Resolve provider, model, prompts, and plugin configuration.
+7. Execute the selected plugin.
+8. Write reports and artifacts.
+9. Persist final workspace state.
+10. Print a summary and exit with the configured status behavior.
+
+### Watcher Workflow
+
+1. Consume a task message.
+2. Validate message shape and matcher rules.
+3. Resolve workflow, repository, plugin, and provider overrides.
+4. Execute the same harness path used by local workflows.
+5. Publish a structured result message when enabled.
+6. Commit or reject the task according to watcher policy.
+
+## Target Module Layout
+
+```text
+src/
+├── auth/
+├── cli/
+├── commands/
+├── config/
+├── git/
+├── governance/
+├── scanner/
+├── providers/
+├── prompts/
+├── agent/
+├── tools/
+├── plugins/
+├── investigation/
+├── reports/
+├── workspace/
+├── workflow/
+├── watcher/
+├── mcp/
+└── telemetry.rs
+```
+
+## Configuration Principles
+
+- Use `.yaml` files only.
+- Prefer OpenAI as the default provider while supporting configured
+  alternatives.
+- Reject legacy sections that do not belong to the workflow harness model.
+- Keep endpoint security validation explicit.
+- Treat empty watcher matcher configuration as reject-all.
+- Persist model selection diagnostics for auditability.
+
+## Error Handling
+
+Errors should be structured and actionable. Recoverable operations return
+`Result<T, E>`, and errors should preserve command context, configuration path,
+workspace path, plugin name, provider name, and task identifiers when available.
+
+Tool execution failures should become structured tool results when a plugin can
+continue safely. Fatal configuration, authentication, or validation errors
+should stop before provider or plugin execution.
+
+## Security Considerations
+
+- Do not write provider secrets to reports, transcripts, logs, or watcher
+  results.
+- Validate repository URLs and endpoint overrides.
+- Require explicit opt-in for insecure provider endpoints.
+- Restrict MCP tools through allow lists.
+- Apply sandbox rules to file and process tools.
+- Keep watcher matcher rules strict enough to avoid unintended task execution.
 
 ## Testing Strategy
 
-### Test Categories
+The first-release test strategy should cover:
 
-1. **Unit Tests**: Individual component testing
-2. **Integration Tests**: Component interaction testing
-3. **End-to-End Tests**: Full workflow testing
-4. **Provider Tests**: Mock provider responses
-
-### Test Coverage Goals
-
-- Overall coverage: >80%
-- Critical paths: >95%
-- Error handling: 100%
-
-### Test Organization
-
-```
-tests/
-├── unit/
-│   ├── agent_tests.rs
-│   ├── provider_tests.rs
-│   └── workflow_tests.rs
-├── integration/
-│   ├── cli_tests.rs
-│   └── workflow_tests.rs
-└── e2e/
-    └── documentation_generation_tests.rs
-```
-
-## Deployment
-
-### Build Configuration
-
-```toml
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-```
-
-### Distribution
-
-- Single statically-linked binary
-- Platform-specific releases (Linux, macOS, Windows)
-- Container image (optional)
-
-### Installation Methods
-
-1. Binary download
-2. Cargo install
-3. Package managers (homebrew, apt, etc.)
-
-## Observability
-
-### Logging
-
-- Structured logging using `tracing`
-- Log levels: ERROR, WARN, INFO, DEBUG, TRACE
-- Log output: stderr (configurable)
-
-### Metrics
-
-- Execution time per workflow step
-- Token usage per operation
-- Success/failure rates
-- Provider response times
-
-### Health Checks
-
-- Provider connectivity
-- File system access
-- Configuration validity
-
-## Dependencies
-
-### Core Dependencies
-
-- `clap` - CLI argument parsing
-- `tokio` - Async runtime
-- `serde` - Serialization
-- `serde_json`, `serde_yaml` - Format support
-- `anyhow`, `thiserror` - Error handling
-- `tracing` - Logging
-
-### Provider Dependencies
-
-- `reqwest` - HTTP client
-- `async-trait` - Async trait support
-
-### Repository Dependencies
-
-- `git2` - Git operations
-- `ignore` - Gitignore support
-- `walkdir` - Directory traversal
-
-### Documentation Dependencies
-
-- `regex` - Pattern matching
-- `handlebars` - Template engine (optional)
+- CLI parsing and command routing.
+- Strict configuration validation.
+- Workspace creation and persistence.
+- Scanner output and ignore behavior.
+- Provider and model selection diagnostics.
+- Prompt resolution.
+- Plugin execution and report generation.
+- Watcher task acceptance, rejection, and result publishing.
+- MCP server validation and safe tool discovery.
 
 ## Future Extensibility
 
-### Planned Extensions
-
-1. **Additional Providers**: OpenAI, Anthropic, Azure OpenAI
-2. **Plan Formats**: TOML, custom DSL
-3. **Output Formats**: PDF, HTML, Confluence
-4. **CI/CD Integration**: GitHub Actions, GitLab CI
-5. **Web Interface**: Optional web UI for monitoring
-
-### Plugin System (Future)
-
-```rust
-pub trait Plugin: Send + Sync {
-    fn name(&self) -> &str;
-    fn initialize(&mut self, config: &Config) -> Result<()>;
-    fn process(&self, context: &mut Context) -> Result<()>;
-}
-```
-
-## References
-
-### Inspiration Sources
-
-- **goose**: Agent architecture, provider abstraction
-- **Zed Agent**: Tool integration, conversation management
-- **Zed Copilot**: Authentication flows
-- **Zed Ollama**: Local provider integration
-
-### Standards & Frameworks
-
-- **Diataxis**: Documentation framework
-- **SPDX**: License specification
-- **RFC 3339**: Timestamp format
-- **ULID**: Unique identifiers
-- **OpenAPI**: API documentation
+The workflow harness is designed for additional plugins, report formats,
+providers, scanner enrichments, and watcher integrations. New capabilities
+should depend on generic workflow, scanner, provider, prompt, and report
+interfaces rather than on single-purpose product flows.
 
 ## Conclusion
 
-XZardgz is designed as a modular, extensible autonomous AI agent for repository documentation generation. The architecture emphasizes:
-
-- **Simplicity**: Clear separation of concerns
-- **Reliability**: Comprehensive error handling and testing
-- **Performance**: Async operations and resource optimization
-- **Extensibility**: Plugin-ready design for future enhancements
-- **Standards Compliance**: Following best practices and industry standards
-
-The phased implementation approach will build this architecture incrementally, starting with core functionality and progressively adding features.
+XZardgz is structured as a reusable workflow harness. Its architecture separates
+command routing, configuration, scanning, provider interaction, prompt
+resolution, plugin execution, reporting, watcher processing, and MCP integration
+so each area can evolve independently.

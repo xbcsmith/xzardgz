@@ -6,7 +6,6 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub agent: AgentConfig,
     pub repository: RepositoryConfig,
-    pub documentation: DocumentationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,11 +23,6 @@ pub struct AgentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepositoryConfig {
     pub ignore_patterns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentationConfig {
-    pub output_dir: String,
 }
 
 impl Config {
@@ -66,9 +60,6 @@ impl Default for Config {
             },
             repository: RepositoryConfig {
                 ignore_patterns: vec!["target".to_string(), ".git".to_string()],
-            },
-            documentation: DocumentationConfig {
-                output_dir: "docs".to_string(),
             },
         }
     }

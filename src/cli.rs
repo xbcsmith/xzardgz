@@ -1,58 +1,53 @@
 use clap::{Parser, Subcommand};
 
+/// Command-line interface for the XZardgz workflow harness.
 #[derive(Parser)]
 #[command(name = "xzardgz")]
-#[command(about = "Autonomous AI agent for documentation generation")]
+#[command(about = "Generic AI workflow harness for repository review automation")]
 pub struct Cli {
+    /// Command to execute.
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
+/// Top-level workflow harness commands.
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run a workflow
+    /// Run a workflow plan.
     Run {
-        /// Path to the plan file
+        /// Path to the plan file.
         #[arg(required = true)]
         plan: String,
     },
-    /// Start an interactive chat session
-    Chat {
-        /// Optional initial message
-        #[arg(short, long)]
-        message: Option<String>,
+    /// Scan a repository and emit a scan artifact.
+    Scan {
+        /// Repository path or URL to scan.
+        #[arg(short, long, default_value = ".")]
+        repository: String,
     },
-    /// Authenticate with providers
+    /// Inspect or execute workflow plugins.
+    Plugin {
+        /// Optional plugin name.
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    /// Start watcher mode for event-driven workflow execution.
+    Watch,
+    /// Authenticate with providers.
     Auth {
+        /// Authentication action to perform.
         #[command(subcommand)]
         command: AuthCommands,
     },
-    /// Generate documentation
-    Generate {
-        /// Repository path
-        #[arg(short, long, default_value = ".")]
-        repository: String,
-
-        /// Documentation category
-        #[arg(short, long, value_enum)]
-        category: crate::docgen::diataxis::DocCategory,
-
-        /// Topic to generate documentation for
-        #[arg(short, long)]
-        topic: String,
-
-        /// Output directory
-        #[arg(short, long, default_value = ".")]
-        output: String,
-
-        /// Overwrite existing files
-        #[arg(long)]
-        overwrite: bool,
-    },
+    /// Manage prompt templates.
+    Prompts,
+    /// Manage MCP server and tool configuration.
+    Mcp,
 }
 
+/// Provider authentication commands.
 #[derive(Subcommand)]
 pub enum AuthCommands {
-    /// Login to GitHub Copilot
+    /// Login to the default provider.
     Login,
 }

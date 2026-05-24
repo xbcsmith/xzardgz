@@ -64,3 +64,25 @@ steps:
     let plan = MarkdownPlanParser.parse(md).unwrap();
     assert_eq!(plan.name, "Test Plan");
 }
+
+#[test]
+fn test_yaml_parser_rejects_legacy_generate_docs_action() {
+    let yaml = r#"
+name: Legacy Doc Gen Plan
+description: A plan using the removed documentation generation action
+steps:
+  - id: step1
+    description: Generate docs
+    action:
+      type: generate_docs
+      params:
+        category: tutorial
+"#;
+
+    let result = YamlPlanParser.parse(yaml);
+
+    assert!(
+        result.is_err(),
+        "legacy `generate_docs` workflow action should be rejected"
+    );
+}

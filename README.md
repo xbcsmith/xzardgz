@@ -1,30 +1,31 @@
 # xzardgz
 
-**Autonomous AI agent for documentation generation using the Diataxis
-framework.**
+**Generic AI workflow harness for repository scanning, plugin execution, and
+reporting.**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Overview
 
-xzardgz is a Rust-based autonomous AI agent that helps you generate high-quality
-documentation following the [Diataxis](https://diataxis.fr/) framework. It
-analyzes your codebase and generates documentation across four categories:
+xzardgz is a Rust-based command-line workflow harness. It coordinates repository
+access, structured scanning, provider-backed agent work, plugin execution,
+workspace persistence, report writing, and watcher processing.
 
-- **Tutorials**: Learning-oriented guides
-- **How-to guides**: Problem-solving oriented instructions
-- **Explanation**: Understanding-oriented discussions
-- **Reference**: Information-oriented technical descriptions
+The first-release surface is centered on generic workflows rather than a
+single-purpose content task. Built-in plugin identifiers are `technical-review`
+and `security-review`.
 
 ## Features
 
-- 🤖 **AI-Powered**: Leverages AI providers (Ollama, GitHub Copilot) for content
-  generation
-- 📚 **Diataxis Framework**: Follows best practices for documentation structure
-- 🔄 **Workflow Engine**: Execute multi-step documentation generation workflows
-- 🔍 **Repository Analysis**: Scans and analyzes code structure
-- 🛠️ **Tool System**: Extensible tool framework for file operations and more
-- 🎯 **CLI Interface**: Simple command-line interface
+- **Workflow harness**: Run local plans or direct plugin invocations.
+- **Repository scanning**: Build structured scan artifacts for plugins and CI.
+- **Plugin runtime**: Execute review plugins against workspaces or scan output.
+- **Watcher mode**: Consume task messages and publish result messages.
+- **Provider abstraction**: Configure OpenAI, Anthropic, Ollama, or Copilot.
+- **Authentication management**: Store, validate, and remove provider
+  credentials.
+- **Prompt management**: Export, validate, inspect, and render prompt templates.
+- **MCP integration**: Validate MCP servers and inspect exposed tools.
 
 ## Installation
 
@@ -38,86 +39,105 @@ cargo install --path .
 
 ### Prerequisites
 
-- Rust 1.70+ (2024 edition)
-- Ollama (for local AI) or GitHub Copilot access
+- Rust 1.70+ with the 2024 edition toolchain.
+- Credentials or local access for at least one supported provider.
+- Kafka access only when using watcher mode.
 
 ## Quick Start
 
-1. **Configure your provider**:
+1. Create a configuration file:
 
 ```yaml
-# config.yaml
 provider:
-  provider_type: "ollama"
-  model: "qwen2.5-coder"
+  default: "openai"
+
+openai:
+  api_key_env: "OPENAI_API_KEY"
+  model: "gpt-4.1-mini"
+
+workspace:
+  root: ".xzardgz/workspaces"
+
+plugins:
+  enabled:
+    - "technical-review"
+    - "security-review"
 ```
 
-2. **Generate documentation**:
+1. Run a technical review workflow:
 
 ```bash
-xzardgz generate \
+xzardgz run \
   --repository . \
-  --category tutorial \
-  --topic "Getting Started"
+  --plugin technical-review \
+  --config config.example.yaml \
+  --output .xzardgz/reports
 ```
 
-3. **Run a workflow**:
+1. Scan a repository without running a plugin:
 
 ```bash
-xzardgz run --plan examples/plans/analyze_repo.yaml
+xzardgz scan --repository . --output .xzardgz/scan/scan.json
+```
+
+1. Inspect available plugins:
+
+```bash
+xzardgz plugin list
 ```
 
 ## Commands
 
-### `generate`
-
-Generate documentation for a specific topic:
-
-```bash
-xzardgz generate \
-  --repository <PATH> \
-  --category <tutorial|how-to|explanation|reference> \
-  --topic "<TOPIC>" \
-  --output <OUTPUT_DIR> \
-  --overwrite
-```
-
 ### `run`
 
-Execute a workflow plan:
+Runs a local workflow plan or direct plugin invocation. It prepares a workspace,
+opens or clones the repository, scans it, runs the selected plugin, writes
+reports, and prints a result summary.
 
-```bash
-xzardgz run --plan <PLAN_FILE>
-```
+### `scan`
+
+Runs repository scanning only and writes a structured scan artifact.
+
+### `plugin`
+
+Lists plugins, shows plugin schemas, validates plugin configuration, and runs a
+plugin against a workspace or scan artifact.
+
+### `watch`
+
+Starts watcher mode for Kafka-backed task processing. It validates matcher
+rules, routes accepted tasks through the workflow harness, persists workspace
+state, writes reports, and publishes result messages.
 
 ### `auth`
 
-Authenticate with providers:
+Manages credentials for OpenAI, Anthropic, Copilot, and Ollama.
 
-```bash
-xzardgz auth login
-```
+### `prompts`
 
-### `chat`
+Manages prompt templates, including export, validation, resolution inspection,
+and test rendering.
 
-Interactive chat session:
+### `mcp`
 
-```bash
-xzardgz chat
-```
+Validates MCP server configuration, lists configured servers, discovers tools,
+and tests safe tool invocation.
 
 ## Configuration
 
-See [Configuration Reference](docs/reference/configuration.md) for detailed
-configuration options.
+See [Configuration Reference](docs/reference/configuration.md) for supported
+configuration sections. The example file is
+[config.example.yaml](config.example.yaml).
 
 ## Documentation
 
+- [Documentation Index](docs/README.md)
 - [Quickstart Guide](docs/tutorials/quickstart.md)
-- [Configure Providers](docs/how_to/configure_providers.md)
-- [Create Workflows](docs/how_to/create_workflows.md)
+- [Configure Providers](docs/how-to/configure_providers.md)
+- [Create Workflows](docs/how-to/create_workflows.md)
 - [Architecture](docs/explanation/architecture.md)
 - [CLI Reference](docs/reference/cli.md)
+- [Configuration Reference](docs/reference/configuration.md)
 - [Workflow Format](docs/reference/workflow_format.md)
 
 ## Development
@@ -137,20 +157,13 @@ cargo test
 ### Code Quality
 
 ```bash
-cargo clippy
-cargo fmt
+cargo fmt --all
+cargo check --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
 ```
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
-for details.
-
-## Acknowledgments
-
-- Inspired by the [Diataxis](https://diataxis.fr/) documentation framework
-- Built with Rust and async/await
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for
+details.

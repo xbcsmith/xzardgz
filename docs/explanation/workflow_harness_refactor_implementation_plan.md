@@ -40,7 +40,8 @@ scope.
   plugin execution.
 - The first built-in plugins are `technical-review` and `security-review`.
 - Security review includes Markdown, JSON, and SARIF output.
-- Documentation paths normalize from `docs/how_to` to `docs/how-to`.
+- Documentation paths use `docs/how-to`; the legacy underscore variant is
+  removed.
 - Implementation summaries remain in `docs/explanation`.
 
 ## Current State Analysis
@@ -61,7 +62,7 @@ scope.
 - `src/repository` contains basic scanner and git operations.
 - `src/xzepr` contains useful Kafka, CloudEvents, and API client code that can
   be refactored into generic watcher infrastructure.
-- `docs/how_to` exists and must be renamed to `docs/how-to`.
+- The task-oriented documentation path must use `docs/how-to`.
 - `README.md`, `config.example.yaml`, `sample_plan.yaml`, and multiple docs
   still describe documentation generation as the product purpose.
 
@@ -357,7 +358,7 @@ correct generic harness equivalent.
 - Remove Diataxis generation behavior.
 - Remove documentation category types.
 - Remove `GenerateDocumentation` and `generate_docs` workflow actions.
-- Rename `docs/how_to` to `docs/how-to`.
+- Ensure task-oriented documentation links use `docs/how-to`.
 
 ### 1.2 Add Foundation Functionality
 
@@ -2184,7 +2185,7 @@ The first release is complete only when all of the following are true:
 - File tools are sandboxed.
 - Tool errors do not abort agent sessions.
 - Scanner has no AI dependency.
-- `docs/how-to` replaces `docs/how_to`.
+- Task-oriented documentation links use `docs/how-to`.
 - All public Rust items introduced or changed have doc comments.
 - Required cargo and Markdown quality gates pass.
 

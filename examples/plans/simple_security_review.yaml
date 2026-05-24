@@ -1,0 +1,30 @@
+name: "Simple Security Review"
+description: "Scan a repository and run the security review plugin"
+repository: "."
+
+steps:
+  - id: "scan"
+    description: "Scan repository structure"
+    action:
+      type: "scan_repository"
+      params: null
+    dependencies: []
+
+  - id: "security_review"
+    description: "Run the security review plugin"
+    action:
+      type: "run_plugin"
+      params:
+        plugin: "security-review"
+    dependencies: ["scan"]
+
+deliverables:
+  - name: "Security Review Report"
+    description: "Markdown report produced by the security review plugin"
+    path: ".xzardgz/reports/security_review.md"
+  - name: "Security Review Findings"
+    description: "JSON findings produced by the security review plugin"
+    path: ".xzardgz/reports/security_review.json"
+  - name: "Security Review SARIF"
+    description: "SARIF report produced by the security review plugin"
+    path: ".xzardgz/reports/security_review.sarif"

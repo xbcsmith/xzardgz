@@ -27,21 +27,12 @@ pub enum Action {
     ScanRepository,
     #[serde(rename = "analyze_code")]
     AnalyzeCode,
-    #[serde(rename = "generate_docs")]
-    GenerateDocumentation { category: DocCategory },
+    #[serde(rename = "run_plugin")]
+    RunPlugin { plugin: String },
     #[serde(rename = "execute_command")]
     ExecuteCommand { command: String },
     #[serde(rename = "agent_task")]
     AgentTask { prompt: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DocCategory {
-    Tutorial,
-    HowTo,
-    Explanation,
-    Reference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

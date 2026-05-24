@@ -18,9 +18,6 @@ pub enum XzardgzError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("Documentation generation error: {0}")]
-    DocGen(#[from] DocGenError),
 }
 
 #[derive(Debug, Error)]
@@ -57,14 +54,4 @@ pub enum RepositoryError {
     Git(String),
     #[error("Scan failed: {0}")]
     Scan(String),
-}
-
-#[derive(Debug, Error)]
-pub enum DocGenError {
-    #[error("Template error: {0}")]
-    Template(String),
-    #[error("Generation error: {0}")]
-    Generation(String),
-    #[error("IO error: {0}")]
-    Io(String),
 }

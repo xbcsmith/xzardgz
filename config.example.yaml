@@ -1,16 +1,163 @@
 provider:
-  provider_type: "ollama"
+  default: "openai"
+  allow_fallback: true
+
+provider_defaults:
+  temperature: 0.2
+  timeout_seconds: 120
+  max_retries: 2
+  max_tokens: 4096
+
+openai:
+  api_key_env: "OPENAI_API_KEY"
+  model: "gpt-4.1-mini"
+  endpoint: "https://api.openai.com/v1"
+  allow_insecure_endpoint: false
+
+anthropic:
+  api_key_env: "ANTHROPIC_API_KEY"
+  model: "claude-3-5-sonnet-latest"
+
+ollama:
+  host: "http://localhost:11434"
   model: "qwen2.5-coder"
+  context_length: 32768
 
-agent:
-  max_turns: 10
-  timeout_seconds: 600
+copilot:
+  model: "gpt-4o"
+  auth_store: "keychain"
 
-repository:
+scanner:
+  include_hidden: false
+  follow_symlinks: false
+  max_file_size_bytes: 1048576
   ignore_patterns:
     - "target"
     - ".git"
     - "node_modules"
 
-documentation:
-  output_dir: "docs"
+git:
+  clone_depth: 1
+  fetch_tags: false
+  clean_before_run: false
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: true
+  keep_failed: true
+
+plugins:
+  default: "technical-review"
+  enabled:
+    - "technical-review"
+    - "security-review"
+
+technical_review:
+  max_findings: 25
+  severity_threshold: "medium"
+  focus_areas:
+    - "architecture"
+    - "reliability"
+    - "maintainability"
+  report_formats:
+    - "markdown"
+    - "json"
+
+security_review:
+  max_findings: 25
+  severity_threshold: "medium"
+  include_sarif: true
+  report_formats:
+    - "markdown"
+    - "json"
+    - "sarif"
+
+governance:
+  enabled: true
+  rules_path: "AGENTS.md"
+  fail_on_violation: true
+
+watcher:
+  enabled: false
+  max_concurrent_tasks: 2
+  result_publish_enabled: true
+  once: false
+
+kafka:
+  brokers:
+    - "localhost:9092"
+  group_id: "xzardgz-workflow-harness"
+  security_protocol: "PLAINTEXT"
+  sasl_mechanism: null
+  sasl_username_env: null
+  sasl_password_env: null
+  ssl_ca_location: null
+
+topics:
+  task: "xzardgz.tasks"
+  result: "xzardgz.results"
+
+matcher:
+  event_types:
+    - "xzardgz.technical_review.requested"
+    - "xzardgz.security_review.requested"
+  repositories: []
+  plugins:
+    - "technical-review"
+    - "security-review"
+  platforms: []
+  metadata: {}
+
+prompts:
+  directories:
+    - ".xzardgz/prompts"
+  allow_overrides: true
+
+subagent:
+  enabled: false
+  max_depth: 1
+
+trace_transcript:
+  enabled: false
+  redact_secrets: true
+  output_dir: ".xzardgz/transcripts"
+
+scan_output:
+  path: ".xzardgz/scan/scan.json"
+  format: "json"
+  overwrite: true
+
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - "markdown"
+    - "json"
+  overwrite: true
+  include_diagnostics: true
+
+mcp:
+  servers: []
+  allowed_tools: {}
+  timeout_seconds: 30
+
+model_metadata:
+  cache_path: ".xzardgz/model_metadata.json"
+  refresh_on_start: false
+  allow_degraded_metadata: true
+
+model_selection:
+  enabled: true
+  auto_fallback: true
+  require_tools: true
+  require_structured_output: true
+  min_context_tokens: 16000
+  preferred_models:
+    - "gpt-4.1-mini"
+  fallback_models:
+    - "gpt-4.1"
+
+project:
+  name: "xzardgz"
+  owner: "local"
+  tags:
+    - "workflow-harness"

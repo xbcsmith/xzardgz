@@ -15,5 +15,5 @@ mod context_tests;
 #[path = "unit/tool_tests.rs"]
 mod tool_tests;
 
-#[path = "unit/docgen_tests.rs"]
-mod docgen_tests;
+#[path = "unit/cli_tests.rs"]
+mod cli_tests;
