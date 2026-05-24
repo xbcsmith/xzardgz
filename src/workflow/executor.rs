@@ -1,9 +1,10 @@
 use crate::agent::core::Agent;
-use crate::error::WorkflowError;
+use crate::error::{PipelineError, Result};
 use crate::workflow::plan::{Action, Plan, WorkflowStep};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Executes a workflow plan step by step, respecting declared dependencies between steps.
 pub struct WorkflowExecutor {
     agent: Arc<Agent>,
     plan: Plan,
@@ -11,6 +12,7 @@ pub struct WorkflowExecutor {
 }
 
 impl WorkflowExecutor {
+    /// Creates a new `WorkflowExecutor` with the given agent and plan.
     pub fn new(agent: Arc<Agent>, plan: Plan) -> Self {
         Self {
             agent,
@@ -19,16 +21,19 @@ impl WorkflowExecutor {
         }
     }
 
-    pub async fn execute(&mut self) -> Result<(), WorkflowError> {
-        // Simple execution loop: find executable steps, execute them, repeat.
+    /// Runs the workflow plan to completion, executing steps in dependency order.
+    ///
+    /// Returns `PipelineError::Workflow` if a deadlock is detected (circular or
+    /// missing dependencies prevent all steps from completing).
+    pub async fn execute(&mut self) -> Result<()> {
         loop {
             let executable_steps = self.get_executable_steps();
             if executable_steps.is_empty() {
                 if self.completed_steps.len() == self.plan.steps.len() {
-                    break; // All done
+                    break;
                 } else {
-                    return Err(WorkflowError::Execution(
-                        "Deadlock or missing dependencies detected".to_string(),
+                    return Err(PipelineError::Workflow(
+                        "deadlock or missing dependencies detected".to_string(),
                     ));
                 }
             }
@@ -56,11 +61,10 @@ impl WorkflowExecutor {
             .collect()
     }
 
-    async fn execute_step(&self, step: &WorkflowStep) -> Result<(), WorkflowError> {
+    async fn execute_step(&self, step: &WorkflowStep) -> Result<()> {
         match &step.action {
             Action::ScanRepository => {
                 println!("Scanning repository...");
-                // TODO: Integrate RepositoryScanner
                 Ok(())
             }
             Action::AnalyzeCode => {
@@ -73,7 +77,6 @@ impl WorkflowExecutor {
             }
             Action::ExecuteCommand { command } => {
                 println!("Executing command: {}", command);
-                // TODO: Execute command safely
                 Ok(())
             }
             Action::AgentTask { prompt } => {
@@ -81,7 +84,7 @@ impl WorkflowExecutor {
                 self.agent
                     .run(prompt)
                     .await
-                    .map_err(|e| WorkflowError::Execution(e.to_string()))?;
+                    .map_err(|e| PipelineError::Workflow(e.to_string()))?;
                 Ok(())
             }
         }

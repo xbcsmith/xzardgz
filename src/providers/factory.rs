@@ -2,14 +2,17 @@ use super::base::Provider;
 use super::copilot::CopilotProvider;
 use super::ollama::OllamaProvider;
 use crate::config::ProviderConfig;
-use crate::error::ProviderError;
-
+use crate::error::{PipelineError, Result};
 use std::sync::Arc;
 
+/// Factory for constructing provider instances from a [`ProviderConfig`].
 pub struct ProviderFactory;
 
 impl ProviderFactory {
-    pub fn create(config: &ProviderConfig) -> Result<Arc<dyn Provider>, ProviderError> {
+    /// Creates an `Arc<dyn Provider>` from the given [`ProviderConfig`].
+    ///
+    /// Returns `PipelineError::Provider` if the `provider_type` field is not recognized.
+    pub fn create(config: &ProviderConfig) -> Result<Arc<dyn Provider>> {
         match config.provider_type.as_str() {
             "ollama" => {
                 let model = config
@@ -25,8 +28,8 @@ impl ProviderFactory {
                 let model = config.model.clone().unwrap_or_else(|| "gpt-4".to_string());
                 Ok(Arc::new(CopilotProvider::new(model)))
             }
-            _ => Err(ProviderError::Auth(format!(
-                "Unknown provider: {}",
+            _ => Err(PipelineError::Provider(format!(
+                "unknown provider type: {}",
                 config.provider_type
             ))),
         }

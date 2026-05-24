@@ -1,4 +1,4 @@
-use crate::error::XzardgzError;
+use crate::error::{PipelineError, Result};
 use crate::providers::types::Tool;
 use crate::tools::{ToolExecutor, ToolResult};
 use async_trait::async_trait;
@@ -7,9 +7,11 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 
+/// Tool that reads the full contents of a file from the local filesystem.
 pub struct ReadFileTool;
 
 impl ReadFileTool {
+    /// Returns the tool definition for `read_file`, including its JSON parameter schema.
     pub fn definition() -> Tool {
         Tool {
             name: "read_file".to_string(),
@@ -30,12 +32,10 @@ impl ReadFileTool {
 
 #[async_trait]
 impl ToolExecutor for ReadFileTool {
-    async fn execute(&self, params: Value) -> Result<ToolResult, XzardgzError> {
-        let path_str = params["path"].as_str().ok_or_else(|| {
-            XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                "Missing path parameter".to_string(),
-            ))
-        })?;
+    async fn execute(&self, params: Value) -> Result<ToolResult> {
+        let path_str = params["path"]
+            .as_str()
+            .ok_or_else(|| PipelineError::Tool("missing path parameter".to_string()))?;
 
         let path = Path::new(path_str);
         if !path.exists() {
@@ -49,9 +49,11 @@ impl ToolExecutor for ReadFileTool {
     }
 }
 
+/// Tool that writes content to a file on the local filesystem.
 pub struct WriteFileTool;
 
 impl WriteFileTool {
+    /// Returns the tool definition for `write_file`, including its JSON parameter schema.
     pub fn definition() -> Tool {
         Tool {
             name: "write_file".to_string(),
@@ -76,17 +78,13 @@ impl WriteFileTool {
 
 #[async_trait]
 impl ToolExecutor for WriteFileTool {
-    async fn execute(&self, params: Value) -> Result<ToolResult, XzardgzError> {
-        let path_str = params["path"].as_str().ok_or_else(|| {
-            XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                "Missing path parameter".to_string(),
-            ))
-        })?;
-        let content = params["content"].as_str().ok_or_else(|| {
-            XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                "Missing content parameter".to_string(),
-            ))
-        })?;
+    async fn execute(&self, params: Value) -> Result<ToolResult> {
+        let path_str = params["path"]
+            .as_str()
+            .ok_or_else(|| PipelineError::Tool("missing path parameter".to_string()))?;
+        let content = params["content"]
+            .as_str()
+            .ok_or_else(|| PipelineError::Tool("missing content parameter".to_string()))?;
 
         match fs::write(path_str, content) {
             Ok(_) => Ok(ToolResult::success(format!(

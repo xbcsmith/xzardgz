@@ -1,5 +1,5 @@
 use crate::agent::context::ConversationContext;
-use crate::error::XzardgzError;
+use crate::error::{PipelineError, Result};
 use crate::providers::base::Provider;
 use crate::providers::types::{Message, Role};
 use crate::tools::executor::ToolExecutionDispatcher;
@@ -9,6 +9,11 @@ use std::sync::Arc;
 #[allow(dead_code)]
 use std::sync::Mutex;
 
+/// The primary agent that ties together a provider, conversation context, and
+/// tool registry to drive a multi-turn, tool-augmented conversation.
+///
+/// Use [`Agent::new`] to construct an instance and [`Agent::run`] to process
+/// a user prompt through the full tool-call loop.
 #[allow(dead_code)]
 pub struct Agent {
     provider: Arc<dyn Provider>,
@@ -18,6 +23,8 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Creates a new [`Agent`] with the given provider, system prompt, and
+    /// tool registry.
     pub fn new(
         provider: Arc<dyn Provider>,
         system_prompt: String,
@@ -28,20 +35,25 @@ impl Agent {
 
         Self {
             provider,
-            context: Mutex::new(ConversationContext::new(system_prompt, 4096)), // Default context window
+            context: Mutex::new(ConversationContext::new(system_prompt, 4096)),
             tool_registry: registry_arc,
             tool_dispatcher: dispatcher,
         }
     }
 
-    pub async fn run(&self, input: &str) -> Result<String, XzardgzError> {
+    /// Runs the agent with the provided user input, executing any tool calls
+    /// the provider requests, and returns the final text response.
+    ///
+    /// Limits tool-call iterations to 5 to prevent infinite loops.  Returns
+    /// [`PipelineError::Agent`] if the limit is exceeded or the context mutex
+    /// becomes poisoned.
+    pub async fn run(&self, input: &str) -> Result<String> {
         // 1. Add user message
         {
-            let mut context = self.context.lock().map_err(|_| {
-                XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                    "Context lock poisoned".to_string(),
-                ))
-            })?;
+            let mut context = self
+                .context
+                .lock()
+                .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
             context.add_message(Message::user(input));
         }
 
@@ -51,21 +63,18 @@ impl Agent {
 
         loop {
             if iterations >= MAX_ITERATIONS {
-                return Err(XzardgzError::Workflow(
-                    crate::error::WorkflowError::Execution(
-                        "Max agent iterations reached".to_string(),
-                    ),
+                return Err(PipelineError::Agent(
+                    "max agent iterations reached".to_string(),
                 ));
             }
             iterations += 1;
 
             // 3. Call provider
             let (messages, tools) = {
-                let context = self.context.lock().map_err(|_| {
-                    XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                        "Context lock poisoned".to_string(),
-                    ))
-                })?;
+                let context = self
+                    .context
+                    .lock()
+                    .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
                 (
                     context.get_messages().to_vec(),
                     self.tool_registry.list_tools(),
@@ -76,11 +85,10 @@ impl Agent {
 
             // 4. Process response
             {
-                let mut context = self.context.lock().map_err(|_| {
-                    XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                        "Context lock poisoned".to_string(),
-                    ))
-                })?;
+                let mut context = self
+                    .context
+                    .lock()
+                    .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
                 context.add_message(response.clone());
             }
 
@@ -92,24 +100,20 @@ impl Agent {
                 for call in tool_calls {
                     let result = self.tool_dispatcher.execute(call).await?;
 
-                    // Add tool result message
                     let tool_msg = Message {
                         role: Role::Tool,
-                        content: result.output, // Or error?
+                        content: result.output,
                         tool_calls: None,
                         tool_call_id: Some(call.id.clone()),
                         name: Some(call.function.name.clone()),
                     };
-                    let mut context = self.context.lock().map_err(|_| {
-                        XzardgzError::Workflow(crate::error::WorkflowError::Execution(
-                            "Context lock poisoned".to_string(),
-                        ))
-                    })?;
+                    let mut context = self
+                        .context
+                        .lock()
+                        .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
                     context.add_message(tool_msg);
                 }
-                // Loop continues to send tool results back to provider
             } else {
-                // No tool calls, return content
                 return Ok(response.content);
             }
         }
