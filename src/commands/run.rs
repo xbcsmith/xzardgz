@@ -28,7 +28,7 @@ pub async fn execute(plan_path: String) -> Result<()> {
     println!("Plan: {}", plan.name);
 
     let config = Config::load()?;
-    let provider = ProviderFactory::create(&config.provider)?;
+    let provider = ProviderFactory::create_from_config(&config)?;
 
     let mut registry = ToolRegistry::new();
     registry.register(ReadFileTool::definition(), Arc::new(ReadFileTool));

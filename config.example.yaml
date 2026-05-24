@@ -1,32 +1,84 @@
+# XZardgz configuration reference
+#
+# This file documents every supported configuration section and field.
+# Copy it to config.yaml and remove or adjust the sections you need.
+#
+# Loading order (highest priority last wins):
+#   1. Compiled defaults (Config::default())
+#   2. This file (field-level merge via serde default)
+#   3. Environment variable overrides (XZARDGZ_PROVIDER, XZARDGZ_OPENAI_MODEL, etc.)
+#   4. CLI / programmatic overrides (ConfigOverrides)
+#
+# Rejected legacy keys: "documentation" and "export_scan" are not valid.
+# Use "reports" and "scan_output" respectively.
+
+# ---------------------------------------------------------------------------
+# Provider selection
+# Determines which AI provider the pipeline uses at runtime.
+# Accepted values: "openai", "anthropic", "ollama", "copilot"
+# Environment override: XZARDGZ_PROVIDER
+# ---------------------------------------------------------------------------
 provider:
   default: "openai"
   allow_fallback: true
 
+# ---------------------------------------------------------------------------
+# Provider defaults
+# Shared parameters applied across all provider implementations.
+# Individual providers do not repeat these fields; the pipeline reads this
+# section as the base and applies provider-specific settings on top.
+# ---------------------------------------------------------------------------
 provider_defaults:
   temperature: 0.2
   timeout_seconds: 120
   max_retries: 2
   max_tokens: 4096
 
+# ---------------------------------------------------------------------------
+# OpenAI provider
+# api_key_env names the environment variable that holds the API key.
+# The key value is never stored in this file.
+# Environment overrides: XZARDGZ_OPENAI_ENDPOINT, XZARDGZ_OPENAI_MODEL
+# ---------------------------------------------------------------------------
 openai:
   api_key_env: "OPENAI_API_KEY"
   model: "gpt-4.1-mini"
   endpoint: "https://api.openai.com/v1"
+  # Set allow_insecure_endpoint: true only for local HTTP proxies.
   allow_insecure_endpoint: false
 
+# ---------------------------------------------------------------------------
+# Anthropic provider
+# api_key_env names the environment variable that holds the API key.
+# ---------------------------------------------------------------------------
 anthropic:
   api_key_env: "ANTHROPIC_API_KEY"
   model: "claude-3-5-sonnet-latest"
 
+# ---------------------------------------------------------------------------
+# Ollama provider
+# Environment overrides: XZARDGZ_OLLAMA_HOST, XZARDGZ_OLLAMA_MODEL
+# ---------------------------------------------------------------------------
 ollama:
   host: "http://localhost:11434"
   model: "qwen2.5-coder"
   context_length: 32768
 
+# ---------------------------------------------------------------------------
+# GitHub Copilot provider
+# auth_store identifies where the Copilot token is stored.
+# "keychain" reads from the operating system keychain.
+# ---------------------------------------------------------------------------
 copilot:
   model: "gpt-4o"
   auth_store: "keychain"
 
+# ---------------------------------------------------------------------------
+# Scanner
+# Controls file discovery during repository scan.
+# max_file_size_bytes: files larger than this value are skipped (default 1 MiB).
+# ignore_patterns: path segments that cause a file or directory to be skipped.
+# ---------------------------------------------------------------------------
 scanner:
   include_hidden: false
   follow_symlinks: false
@@ -36,22 +88,40 @@ scanner:
     - ".git"
     - "node_modules"
 
+# ---------------------------------------------------------------------------
+# Git
+# Options for cloning and preparing repositories.
+# ---------------------------------------------------------------------------
 git:
   clone_depth: 1
   fetch_tags: false
   clean_before_run: false
 
+# ---------------------------------------------------------------------------
+# Workspace
+# Controls where pipeline working directories are created and how they are
+# retained after a run.
+# ---------------------------------------------------------------------------
 workspace:
   root: ".xzardgz/workspaces"
   resume: true
   keep_failed: true
 
+# ---------------------------------------------------------------------------
+# Plugins
+# default: the plugin used when no explicit plugin is requested.
+# enabled: the complete list of plugins that may be invoked. A plugin not
+#          in this list cannot be used even if named in a watcher task message.
+# ---------------------------------------------------------------------------
 plugins:
   default: "technical-review"
   enabled:
     - "technical-review"
     - "security-review"
 
+# ---------------------------------------------------------------------------
+# Technical review plugin
+# ---------------------------------------------------------------------------
 technical_review:
   max_findings: 25
   severity_threshold: "medium"
@@ -63,6 +133,10 @@ technical_review:
     - "markdown"
     - "json"
 
+# ---------------------------------------------------------------------------
+# Security review plugin
+# include_sarif: produce a SARIF 2.1.0 report for use with GitHub Code Scanning.
+# ---------------------------------------------------------------------------
 security_review:
   max_findings: 25
   severity_threshold: "medium"
@@ -72,17 +146,32 @@ security_review:
     - "json"
     - "sarif"
 
+# ---------------------------------------------------------------------------
+# Governance
+# rules_path: path to the file that defines project governance rules.
+# fail_on_violation: abort the pipeline run when a rule is violated.
+# ---------------------------------------------------------------------------
 governance:
   enabled: true
   rules_path: "AGENTS.md"
   fail_on_violation: true
 
+# ---------------------------------------------------------------------------
+# Watcher
+# Controls the long-running Kafka consumer process.
+# once: process one batch then exit (useful for smoke tests).
+# ---------------------------------------------------------------------------
 watcher:
   enabled: false
   max_concurrent_tasks: 2
   result_publish_enabled: true
   once: false
 
+# ---------------------------------------------------------------------------
+# Kafka
+# SASL credentials are stored as environment variable names, not literal values.
+# Supported security_protocol values: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
+# ---------------------------------------------------------------------------
 kafka:
   brokers:
     - "localhost:9092"
@@ -93,10 +182,21 @@ kafka:
   sasl_password_env: null
   ssl_ca_location: null
 
+# ---------------------------------------------------------------------------
+# Topics
+# task: topic the watcher reads incoming pipeline task messages from.
+# result: topic the watcher publishes completed result messages to.
+# ---------------------------------------------------------------------------
 topics:
   task: "xzardgz.tasks"
   result: "xzardgz.results"
 
+# ---------------------------------------------------------------------------
+# Matcher
+# Routing rules applied to each incoming watcher message.
+# An empty matcher (event_types, repositories, and plugins all empty) rejects
+# all messages. Add at least one event_type to enable routing.
+# ---------------------------------------------------------------------------
 matcher:
   event_types:
     - "xzardgz.technical_review.requested"
@@ -108,25 +208,50 @@ matcher:
   platforms: []
   metadata: {}
 
+# ---------------------------------------------------------------------------
+# Prompts
+# directories: ordered list of paths searched for prompt templates.
+# allow_overrides: permit local prompt files to shadow built-in templates.
+# ---------------------------------------------------------------------------
 prompts:
   directories:
     - ".xzardgz/prompts"
   allow_overrides: true
 
+# ---------------------------------------------------------------------------
+# Subagent
+# Controls recursive subagent invocations within a pipeline run.
+# max_depth: maximum number of nested subagent calls allowed.
+# ---------------------------------------------------------------------------
 subagent:
   enabled: false
   max_depth: 1
 
+# ---------------------------------------------------------------------------
+# Trace transcript
+# Captures a full turn-by-turn transcript of each pipeline run.
+# redact_secrets: replace likely secret values with placeholder text.
+# ---------------------------------------------------------------------------
 trace_transcript:
   enabled: false
   redact_secrets: true
   output_dir: ".xzardgz/transcripts"
 
+# ---------------------------------------------------------------------------
+# Scan output
+# Where the raw scan result is written after repository scanning completes.
+# format: "json" is the only supported value in Phase 3.
+# ---------------------------------------------------------------------------
 scan_output:
   path: ".xzardgz/scan/scan.json"
   format: "json"
   overwrite: true
 
+# ---------------------------------------------------------------------------
+# Reports
+# Controls the final report output written at the end of a pipeline run.
+# include_diagnostics: append the diagnostics collection to the report.
+# ---------------------------------------------------------------------------
 reports:
   output_dir: ".xzardgz/reports"
   formats:
@@ -135,16 +260,53 @@ reports:
   overwrite: true
   include_diagnostics: true
 
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol)
+# Registry of external tool servers the agent may call.
+# timeout_seconds: default per-call timeout applied to any server that does
+#   not specify its own timeout. Must be greater than zero.
+# allowed_tools: top-level allow-list mapping server name to permitted tools.
+#
+# Example server entry (uncomment and adjust to register an MCP server):
+#
+# servers:
+#   - name: "filesystem"
+#     command: "npx"
+#     args:
+#       - "-y"
+#       - "@modelcontextprotocol/server-filesystem"
+#       - "/path/to/allowed/directory"
+#     env: {}
+#     timeout_seconds: 30
+#     transport: "stdio"
+#     allowed_tools:
+#       - "read_file"
+#       - "list_directory"
+#     auth: null
+# ---------------------------------------------------------------------------
 mcp:
   servers: []
   allowed_tools: {}
   timeout_seconds: 30
 
+# ---------------------------------------------------------------------------
+# Model metadata
+# Cache of model capability information used by the model selection system.
+# refresh_on_start: re-fetch metadata from the provider on every startup.
+# allow_degraded_metadata: continue if metadata fetch fails rather than abort.
+# ---------------------------------------------------------------------------
 model_metadata:
   cache_path: ".xzardgz/model_metadata.json"
   refresh_on_start: false
   allow_degraded_metadata: true
 
+# ---------------------------------------------------------------------------
+# Model selection
+# Capability constraints a model must satisfy before it is considered eligible.
+# min_context_tokens: must be greater than zero.
+# preferred_models: tried in order before falling back.
+# fallback_models: tried in order if no preferred model meets all constraints.
+# ---------------------------------------------------------------------------
 model_selection:
   enabled: true
   auto_fallback: true
@@ -156,6 +318,11 @@ model_selection:
   fallback_models:
     - "gpt-4.1"
 
+# ---------------------------------------------------------------------------
+# Project
+# Metadata about the project being analysed. Used in report headers and
+# watcher result messages.
+# ---------------------------------------------------------------------------
 project:
   name: "xzardgz"
   owner: "local"
