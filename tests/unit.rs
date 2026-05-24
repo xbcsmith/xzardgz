@@ -20,3 +20,6 @@ mod cli_tests;
 
 #[path = "unit/workflow_validation_tests.rs"]
 mod workflow_validation_tests;
+
+#[path = "unit/workspace_tests.rs"]
+mod workspace_tests;
