@@ -7,6 +7,7 @@ pub mod error;
 pub mod git;
 pub mod providers;
 pub mod repository;
+pub mod scanner;
 pub mod telemetry;
 pub mod tools;
 pub mod workspace;
