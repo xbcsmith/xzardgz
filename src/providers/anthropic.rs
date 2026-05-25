@@ -8,7 +8,7 @@
 //! - Non-streaming completion via the Anthropic Messages API
 //! - SSE streaming with `"stream": true`
 //! - Extended thinking support via `"thinking"` request block (Claude 3.5+)
-//! - Static model table for offline capability resolution
+//! - Capability inference via [`infer_anthropic_capabilities`] from model ID strings
 
 use std::pin::Pin;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::base::Provider;
 use super::types::{
@@ -126,75 +126,9 @@ impl AnthropicProvider {
         "anthropic"
     }
 
-    /// Returns the static capability table for well-known Anthropic models.
-    ///
-    /// This list is always returned by [`list_models`][Provider::list_models]
-    /// because the Anthropic API does not expose a model listing endpoint.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use xzardgz::providers::anthropic::AnthropicProvider;
-    ///
-    /// let models = AnthropicProvider::static_anthropic_models();
-    /// assert!(models.iter().any(|m| m.id == "claude-3-5-sonnet-latest"));
-    /// ```
-    pub fn static_anthropic_models() -> Vec<ModelMetadata> {
-        vec![
-            ModelMetadata::new(
-                "claude-opus-4-5",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: true,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 200_000,
-                },
-            ),
-            ModelMetadata::new(
-                "claude-3-5-sonnet-latest",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: true,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 200_000,
-                },
-            ),
-            ModelMetadata::new(
-                "claude-3-5-haiku-latest",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 200_000,
-                },
-            ),
-            ModelMetadata::new(
-                "claude-3-opus-latest",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 200_000,
-                },
-            ),
-        ]
-    }
-
     /// Returns `true` if the configured model supports extended thinking.
     fn model_supports_thinking(&self) -> bool {
-        Self::static_anthropic_models()
-            .iter()
-            .find(|m| m.id == self.config.model)
-            .map(|m| m.capabilities.supports_thinking)
-            .unwrap_or(false)
+        infer_anthropic_capabilities(&self.config.model).supports_thinking
     }
 
     /// Core completion implementation shared by `complete` and
@@ -273,6 +207,70 @@ impl AnthropicProvider {
         })?;
 
         Ok(from_anthropic_response(&anthro_response))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Capability inference
+// ---------------------------------------------------------------------------
+
+/// Infers [`ModelCapabilities`] from an Anthropic model ID using naming
+/// conventions.
+///
+/// The Anthropic models API returns model IDs but does not expose a capability
+/// matrix. This function applies pattern-based heuristics from Anthropic's
+/// public documentation.
+///
+/// # Arguments
+///
+/// * `model_id` - The model identifier (e.g. `"claude-3-5-sonnet-latest"`,
+///   `"claude-opus-4-5"`).
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::providers::anthropic::infer_anthropic_capabilities;
+///
+/// let caps = infer_anthropic_capabilities("claude-3-5-sonnet-latest");
+/// assert!(caps.supports_thinking);
+/// assert!(caps.supports_tools);
+///
+/// let caps = infer_anthropic_capabilities("claude-3-haiku-20240307");
+/// assert!(caps.supports_tools);
+/// assert!(!caps.supports_thinking);
+/// ```
+pub fn infer_anthropic_capabilities(model_id: &str) -> ModelCapabilities {
+    let id = model_id.to_lowercase();
+
+    // All claude-3+ models support tools and vision.
+    let is_modern = id.contains("claude-3")
+        || id.contains("claude-4")
+        || id.contains("claude-opus-4")
+        || id.contains("claude-sonnet-4")
+        || id.contains("claude-haiku-4");
+
+    // Extended thinking / reasoning: claude-3.5+, claude-3.7+, claude-4+,
+    // and claude-3-opus (which supports extended thinking per Anthropic docs).
+    let supports_thinking = id.contains("claude-3-5")
+        || id.contains("claude-3.5")
+        || id.contains("claude-3-7")
+        || id.contains("claude-3.7")
+        || id.contains("claude-4")
+        || id.contains("claude-opus-4")
+        || id.contains("claude-sonnet-4")
+        // claude-3-opus supports extended thinking
+        || (id.contains("claude-3") && id.contains("opus"));
+
+    // Context: claude-3+ models have 200k context windows.
+    let context_window_tokens = if is_modern { 200_000 } else { 100_000 };
+
+    ModelCapabilities {
+        supports_tools: is_modern,
+        supports_structured_output: is_modern,
+        supports_thinking,
+        supports_streaming: true, // all Claude models support streaming
+        supports_vision: is_modern,
+        context_window_tokens,
     }
 }
 
@@ -441,10 +439,7 @@ impl Provider for AnthropicProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "anthropic".to_string(),
-            models: Self::static_anthropic_models()
-                .into_iter()
-                .map(|m| m.id)
-                .collect(),
+            models: vec![self.config.model.clone()],
             capabilities: ProviderCapabilities {
                 streaming: true,
                 tools: true,
@@ -466,13 +461,97 @@ impl Provider for AnthropicProvider {
         }
     }
 
-    /// Returns the static model table (Anthropic has no model listing endpoint).
+    /// Lists models available from the Anthropic API via `GET /v1/models`.
+    ///
+    /// On any failure (missing key, network error, non-2xx response, parse
+    /// error) falls back silently to a single-entry list using the configured
+    /// model name with inferred capabilities.
     ///
     /// # Errors
     ///
-    /// Never returns `Err`.
+    /// Never returns `Err` — all failures produce a single-model fallback.
     async fn list_models(&self) -> Result<Vec<ModelMetadata>> {
-        Ok(Self::static_anthropic_models())
+        let api_key = match self.api_key() {
+            Some(k) => k,
+            None => {
+                debug!("no Anthropic API key; returning configured model only");
+                return Ok(vec![ModelMetadata::new(
+                    self.config.model.clone(),
+                    infer_anthropic_capabilities(&self.config.model),
+                )]);
+            }
+        };
+
+        let url = "https://api.anthropic.com/v1/models";
+        let response = match self
+            .client
+            .get(url)
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("failed to fetch Anthropic models ({e}); returning configured model");
+                return Ok(vec![ModelMetadata::new(
+                    self.config.model.clone(),
+                    infer_anthropic_capabilities(&self.config.model),
+                )]);
+            }
+        };
+
+        if !response.status().is_success() {
+            warn!(
+                "Anthropic /v1/models returned {}; returning configured model",
+                response.status()
+            );
+            return Ok(vec![ModelMetadata::new(
+                self.config.model.clone(),
+                infer_anthropic_capabilities(&self.config.model),
+            )]);
+        }
+
+        // Anthropic models response: {"data": [{"id": "claude-...", "display_name": "...", ...}]}
+        #[derive(serde::Deserialize)]
+        struct AnthropicModelList {
+            data: Vec<AnthropicModelEntry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct AnthropicModelEntry {
+            id: String,
+            #[serde(default)]
+            display_name: Option<String>,
+        }
+
+        match response.json::<AnthropicModelList>().await {
+            Ok(list) => {
+                let models = list
+                    .data
+                    .into_iter()
+                    .map(|entry| {
+                        let mut meta = ModelMetadata::new(
+                            entry.id.clone(),
+                            infer_anthropic_capabilities(&entry.id),
+                        );
+                        if let Some(name) = entry.display_name {
+                            meta.display_name = Some(name);
+                        }
+                        meta
+                    })
+                    .collect();
+                Ok(models)
+            }
+            Err(e) => {
+                warn!(
+                    "failed to parse Anthropic models response ({e}); returning configured model"
+                );
+                Ok(vec![ModelMetadata::new(
+                    self.config.model.clone(),
+                    infer_anthropic_capabilities(&self.config.model),
+                )])
+            }
+        }
     }
 
     /// Sends a non-streaming chat completion to the Anthropic Messages API.
@@ -716,61 +795,59 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Static model table
+    // Capability inference
     // ------------------------------------------------------------------
 
     #[test]
-    fn test_anthropic_static_models_contains_expected_models() {
-        let models = AnthropicProvider::static_anthropic_models();
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&"claude-opus-4-5"));
-        assert!(ids.contains(&"claude-3-5-sonnet-latest"));
-        assert!(ids.contains(&"claude-3-5-haiku-latest"));
-        assert!(ids.contains(&"claude-3-opus-latest"));
+    fn test_infer_anthropic_capabilities_claude_35_sonnet_has_thinking() {
+        let caps = infer_anthropic_capabilities("claude-3-5-sonnet-latest");
+        assert!(caps.supports_thinking);
+        assert!(caps.supports_tools);
+        assert_eq!(caps.context_window_tokens, 200_000);
     }
 
     #[test]
-    fn test_anthropic_static_models_claude_sonnet_has_thinking_support() {
-        let models = AnthropicProvider::static_anthropic_models();
-        let sonnet = models
-            .iter()
-            .find(|m| m.id == "claude-3-5-sonnet-latest")
-            .expect("claude-3-5-sonnet-latest");
-        assert!(sonnet.capabilities.supports_thinking);
-        assert!(sonnet.capabilities.supports_tools);
-        assert!(sonnet.capabilities.supports_streaming);
+    fn test_infer_anthropic_capabilities_claude_3_haiku_has_no_thinking() {
+        let caps = infer_anthropic_capabilities("claude-3-haiku-20240307");
+        assert!(!caps.supports_thinking);
+        assert!(caps.supports_tools);
     }
 
     #[test]
-    fn test_anthropic_static_models_claude_haiku_has_no_thinking_support() {
-        let models = AnthropicProvider::static_anthropic_models();
-        let haiku = models
-            .iter()
-            .find(|m| m.id == "claude-3-5-haiku-latest")
-            .expect("claude-3-5-haiku-latest");
-        assert!(!haiku.capabilities.supports_thinking);
+    fn test_infer_anthropic_capabilities_claude_4_has_thinking() {
+        let caps = infer_anthropic_capabilities("claude-opus-4-5");
+        assert!(caps.supports_thinking);
+        assert!(caps.supports_tools);
     }
 
     #[test]
-    fn test_anthropic_static_models_claude_opus_has_no_thinking_support() {
-        let models = AnthropicProvider::static_anthropic_models();
-        let opus = models
-            .iter()
-            .find(|m| m.id == "claude-3-opus-latest")
-            .expect("claude-3-opus-latest");
-        assert!(!opus.capabilities.supports_thinking);
+    fn test_infer_anthropic_capabilities_claude_3_opus_has_thinking() {
+        // claude-3-opus supports extended thinking per Anthropic docs
+        let caps = infer_anthropic_capabilities("claude-3-opus-latest");
+        assert!(caps.supports_thinking);
     }
 
     #[test]
-    fn test_anthropic_static_models_all_have_large_context_window() {
-        let models = AnthropicProvider::static_anthropic_models();
-        for model in &models {
+    fn test_infer_anthropic_capabilities_all_modern_have_large_context() {
+        for id in &[
+            "claude-3-5-sonnet-latest",
+            "claude-3-haiku-20240307",
+            "claude-opus-4-5",
+        ] {
+            let caps = infer_anthropic_capabilities(id);
             assert_eq!(
-                model.capabilities.context_window_tokens, 200_000,
-                "{} should have 200k context",
-                model.id
+                caps.context_window_tokens, 200_000,
+                "expected 200k context for {id}"
             );
         }
+    }
+
+    #[test]
+    fn test_infer_anthropic_capabilities_unknown_model_conservative() {
+        let caps = infer_anthropic_capabilities("claude-future-unknown");
+        // unknown model -- conservative: not modern, not thinking
+        assert!(!caps.supports_tools);
+        assert!(!caps.supports_thinking);
     }
 
     // ------------------------------------------------------------------
@@ -802,14 +879,13 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // list_models
+    // metadata / list_models
     // ------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn test_anthropic_list_models_returns_static_list() {
-        let provider = AnthropicProvider::from_config(&Config::default());
-        // SAFETY: list_models for Anthropic always returns Ok.
-        let models = provider.list_models().await.unwrap();
-        assert!(!models.is_empty());
+    #[test]
+    fn test_anthropic_provider_metadata_lists_configured_model() {
+        let provider = AnthropicProvider::from_config(&crate::config::Config::default());
+        let meta = provider.metadata();
+        assert!(!meta.models.is_empty());
     }
 }

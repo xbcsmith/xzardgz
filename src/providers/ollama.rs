@@ -136,6 +136,81 @@ struct OllamaModelEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Capability inference
+// ---------------------------------------------------------------------------
+
+/// Infers [`ModelCapabilities`] from an Ollama model name.
+///
+/// Ollama hosts many different model families. This function applies
+/// conservative heuristics based on well-known model name patterns.
+/// The tag (e.g. `":latest"`, `":7b"`) is stripped before matching.
+///
+/// When in doubt, capabilities default to `false` to avoid incorrectly
+/// claiming tool-calling or vision support.
+///
+/// # Arguments
+///
+/// * `model_id` - The model name as returned by `GET /api/tags`
+///   (e.g. `"llama3.2:latest"`, `"mistral:7b"`, `"llava:13b"`).
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::providers::ollama::infer_ollama_capabilities;
+///
+/// let caps = infer_ollama_capabilities("qwen2.5-coder:latest");
+/// assert!(!caps.supports_thinking);
+///
+/// let caps = infer_ollama_capabilities("llava:13b");
+/// assert!(caps.supports_vision);
+/// ```
+pub fn infer_ollama_capabilities(model_id: &str) -> ModelCapabilities {
+    // Strip tag suffix (e.g. ":latest", ":7b-instruct") for cleaner matching.
+    let base = model_id
+        .split(':')
+        .next()
+        .unwrap_or(model_id)
+        .to_lowercase();
+
+    // Models known to support tool / function calling.
+    let supports_tools = base.contains("mistral")
+        || base.starts_with("llama3")
+        || base.contains("llama3.")
+        || base.contains("llama-3")
+        || base.contains("qwen")
+        || base.contains("gemma2")
+        || base.contains("gemma3")
+        || base.contains("gemma-2")
+        || base.contains("gemma-3")
+        || base.contains("mixtral")
+        || base.contains("command-r")
+        || base.contains("phi3")
+        || base.contains("phi-3")
+        || base.contains("phi4")
+        || base.contains("phi-4")
+        || base.contains("solar");
+
+    // Vision-capable models.
+    let supports_vision = base.contains("llava")
+        || base.contains("bakllava")
+        || base.contains("vision")
+        || base.contains("minicpm-v")
+        || base.contains("moondream")
+        || base.contains("cogvlm");
+
+    ModelCapabilities {
+        supports_tools,
+        supports_structured_output: false, // conservative; Ollama's structured output support varies
+        supports_thinking: false,
+        supports_streaming: true,
+        supports_vision,
+        // Use a conservative default; the actual context length is controlled
+        // by Ollama's num_ctx parameter, not something we know from the name.
+        context_window_tokens: 32_768,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider trait implementation
 // ---------------------------------------------------------------------------
 
@@ -185,7 +260,7 @@ impl Provider for OllamaProvider {
                 warn!("failed to fetch Ollama tags ({e}); using configured model");
                 return Ok(vec![ModelMetadata::new(
                     self.model.clone(),
-                    ModelCapabilities::default(),
+                    infer_ollama_capabilities(&self.model),
                 )]);
             }
         };
@@ -197,7 +272,7 @@ impl Provider for OllamaProvider {
             );
             return Ok(vec![ModelMetadata::new(
                 self.model.clone(),
-                ModelCapabilities::default(),
+                infer_ollama_capabilities(&self.model),
             )]);
         }
 
@@ -207,7 +282,7 @@ impl Provider for OllamaProvider {
                 warn!("failed to parse Ollama tags response ({e}); using configured model");
                 return Ok(vec![ModelMetadata::new(
                     self.model.clone(),
-                    ModelCapabilities::default(),
+                    infer_ollama_capabilities(&self.model),
                 )]);
             }
         };
@@ -215,7 +290,9 @@ impl Provider for OllamaProvider {
         let models = tags
             .models
             .into_iter()
-            .map(|entry| ModelMetadata::new(entry.name, ModelCapabilities::default()))
+            .map(|entry| {
+                ModelMetadata::new(entry.name.clone(), infer_ollama_capabilities(&entry.name))
+            })
             .collect();
 
         Ok(models)
@@ -470,5 +547,46 @@ mod tests {
         // Verify construction succeeds; actual network call is not made here.
         let provider = make_provider();
         assert!(!provider.supports_thinking());
+    }
+
+    // ------------------------------------------------------------------
+    // infer_ollama_capabilities
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_infer_ollama_capabilities_llama3_has_tool_support() {
+        let caps = infer_ollama_capabilities("llama3.2:latest");
+        assert!(caps.supports_tools);
+        assert!(!caps.supports_thinking);
+    }
+
+    #[test]
+    fn test_infer_ollama_capabilities_llava_has_vision() {
+        let caps = infer_ollama_capabilities("llava:13b");
+        assert!(caps.supports_vision);
+    }
+
+    #[test]
+    fn test_infer_ollama_capabilities_qwen_has_tool_support() {
+        let caps = infer_ollama_capabilities("qwen2.5-coder:7b");
+        assert!(caps.supports_tools);
+        assert!(!caps.supports_vision);
+    }
+
+    #[test]
+    fn test_infer_ollama_capabilities_unknown_model_conservative() {
+        let caps = infer_ollama_capabilities("some-unknown-model:latest");
+        assert!(!caps.supports_tools);
+        assert!(!caps.supports_vision);
+        assert!(!caps.supports_thinking);
+        assert!(caps.supports_streaming);
+    }
+
+    #[test]
+    fn test_infer_ollama_capabilities_strips_tag_before_matching() {
+        // "llama3.2:7b-instruct" should match the same as "llama3.2"
+        let caps_with_tag = infer_ollama_capabilities("llama3.2:7b-instruct");
+        let caps_base = infer_ollama_capabilities("llama3.2");
+        assert_eq!(caps_with_tag.supports_tools, caps_base.supports_tools);
     }
 }

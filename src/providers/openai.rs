@@ -8,10 +8,10 @@
 //! - Full [`complete`][Provider::complete] via `POST /chat/completions`
 //! - Streaming via SSE with `"stream": true`
 //! - Thinking-mode support for `o1` and `o3-mini` via `reasoning_effort`
-//! - Static model table for offline capability resolution
-//! - Silent fallback to static table when the `/models` endpoint is unreachable
+//! - Capability inference for any model ID via naming conventions
+//! - Silent fallback to the configured model with inferred capabilities when the
+//!   `/models` endpoint is unreachable
 
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -143,106 +143,21 @@ impl OpenAiProvider {
         "openai"
     }
 
-    /// Returns the static capability table for well-known OpenAI models.
-    ///
-    /// This list is used when the live `/models` endpoint is unavailable or
-    /// the API key is absent.  It is also used to enrich live model listings
-    /// with capability data.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use xzardgz::providers::openai::OpenAiProvider;
-    ///
-    /// let models = OpenAiProvider::static_openai_models();
-    /// assert!(!models.is_empty());
-    /// assert!(models.iter().any(|m| m.id == "gpt-4o"));
-    /// ```
-    pub fn static_openai_models() -> Vec<ModelMetadata> {
-        vec![
-            ModelMetadata::new(
-                "gpt-4.1",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 128_000,
-                },
-            ),
-            ModelMetadata::new(
-                "gpt-4.1-mini",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 128_000,
-                },
-            ),
-            ModelMetadata::new(
-                "gpt-4o",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: true,
-                    context_window_tokens: 128_000,
-                },
-            ),
-            ModelMetadata::new(
-                "gpt-4o-mini",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: false,
-                    supports_streaming: true,
-                    supports_vision: false,
-                    context_window_tokens: 128_000,
-                },
-            ),
-            ModelMetadata::new(
-                "o1",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: true,
-                    supports_streaming: false,
-                    supports_vision: false,
-                    context_window_tokens: 200_000,
-                },
-            ),
-            ModelMetadata::new(
-                "o3-mini",
-                ModelCapabilities {
-                    supports_tools: true,
-                    supports_structured_output: true,
-                    supports_thinking: true,
-                    supports_streaming: false,
-                    supports_vision: false,
-                    context_window_tokens: 200_000,
-                },
-            ),
-        ]
-    }
-
-    /// Returns the static model table indexed by model ID for O(1) lookup.
-    fn static_models_map() -> HashMap<String, ModelMetadata> {
-        Self::static_openai_models()
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect()
-    }
-
-    /// Returns `true` if the configured model supports thinking (reasoning effort).
+    /// Returns `true` if the configured model supports extended reasoning.
     fn model_supports_thinking(&self) -> bool {
-        Self::static_models_map()
-            .get(&self.config.model)
-            .map(|m| m.capabilities.supports_thinking)
-            .unwrap_or(false)
+        infer_openai_capabilities(&self.config.model).supports_thinking
+    }
+
+    /// Returns a single-item list containing the configured model with
+    /// capabilities inferred from the model ID.
+    ///
+    /// Used as the fallback when the live `/models` endpoint is unavailable,
+    /// the API key is absent, or the response cannot be parsed.
+    fn configured_model_fallback(&self) -> Vec<ModelMetadata> {
+        vec![ModelMetadata::new(
+            self.config.model.clone(),
+            infer_openai_capabilities(&self.config.model),
+        )]
     }
 
     /// Core non-streaming completion implementation shared by `complete` and
@@ -318,6 +233,94 @@ impl OpenAiProvider {
             .ok_or_else(|| PipelineError::Provider("OpenAI returned no choices".to_string()))?;
 
         Ok(from_oai_message(&choice.message))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Capability inference
+// ---------------------------------------------------------------------------
+
+/// Infers [`ModelCapabilities`] from an OpenAI model ID using naming conventions.
+///
+/// Since the OpenAI models endpoint does not expose a capability matrix,
+/// this function applies pattern-based rules derived from OpenAI's public
+/// documentation.  The rules are deliberately conservative on ambiguous IDs.
+///
+/// # Arguments
+///
+/// * `model_id` - The model identifier as returned by the OpenAI API (e.g.
+///   `"gpt-4o-mini"`, `"o3"`, `"text-embedding-ada-002"`).
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::providers::openai::infer_openai_capabilities;
+///
+/// let caps = infer_openai_capabilities("gpt-4o");
+/// assert!(caps.supports_tools);
+/// assert!(!caps.supports_thinking);
+///
+/// let caps = infer_openai_capabilities("o3");
+/// assert!(caps.supports_thinking);
+/// ```
+pub fn infer_openai_capabilities(model_id: &str) -> ModelCapabilities {
+    let id = model_id.to_lowercase();
+
+    // Reasoning / thinking: o-series models (o1, o2, o3, o4, ...).
+    // Pattern: starts with "o" followed by one or more ASCII digits, optionally
+    // with a suffix like "-mini" or "-preview".
+    let supports_thinking = {
+        let mut chars = id.chars();
+        let first = chars.next();
+        let second = chars.next();
+        (first == Some('o') && second.map(|c| c.is_ascii_digit()).unwrap_or(false))
+            || id.contains("-reasoning")
+    };
+
+    // Non-chat models (embeddings, audio, image generation) do not support tools.
+    let is_chat_model = !id.contains("text-embedding")
+        && !id.contains("embedding")
+        && !id.contains("whisper")
+        && !id.contains("tts")
+        && !id.contains("dall-e")
+        && !id.contains("text-davinci")
+        && !id.contains("babbage")
+        && !id.contains("ada")
+        && !id.contains("curie")
+        && !id.contains("moderation");
+
+    let supports_tools = is_chat_model;
+    let supports_structured_output = is_chat_model;
+
+    // Vision: gpt-4o, gpt-4.x, gpt-4-vision, and successors.
+    let supports_vision = id.contains("gpt-4o")
+        || id.contains("gpt-4-vision")
+        || id.starts_with("gpt-4.")
+        || id.contains("gpt-4.1")
+        || id.contains("gpt-4.5");
+
+    // Streaming: most models; some o1 variants do not support it.
+    // Be conservative: assume streaming unless the base name is exactly "o1".
+    let supports_streaming = id != "o1" && id != "o1-preview";
+
+    // Context window -- best-effort from the model name.
+    let context_window_tokens = if supports_thinking {
+        200_000 // o-series
+    } else if id.contains("gpt-4") {
+        128_000
+    } else if id.contains("32k") {
+        32_768
+    } else {
+        16_384 // conservative default (covers 16k variants and all unknown IDs)
+    };
+
+    ModelCapabilities {
+        supports_tools,
+        supports_structured_output,
+        supports_thinking,
+        supports_streaming,
+        supports_vision,
+        context_window_tokens,
     }
 }
 
@@ -497,13 +500,13 @@ impl Provider for OpenAiProvider {
     }
 
     /// Returns aggregate metadata for the OpenAI provider.
+    ///
+    /// Reports the configured model as the sole entry in `models`; the live
+    /// list is available via [`list_models`][Provider::list_models].
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "openai".to_string(),
-            models: Self::static_openai_models()
-                .into_iter()
-                .map(|m| m.id)
-                .collect(),
+            models: vec![self.config.model.clone()],
             capabilities: ProviderCapabilities {
                 streaming: true,
                 tools: true,
@@ -527,19 +530,20 @@ impl Provider for OpenAiProvider {
 
     /// Lists available models.
     ///
-    /// Attempts `GET {endpoint}/models` with the configured API key.  On any
-    /// failure (missing key, network error, non-2xx) silently returns the
-    /// static model table.
+    /// Always attempts `GET {endpoint}/models` with the configured API key
+    /// first.  On any failure (missing key, network error, non-2xx, or parse
+    /// error) returns a single-entry list for the configured model with
+    /// capabilities inferred via [`infer_openai_capabilities`].
     ///
     /// # Errors
     ///
-    /// Never returns `Err` — failures fall back to the static list.
+    /// Never returns `Err` — all failures fall back to the configured model.
     async fn list_models(&self) -> Result<Vec<ModelMetadata>> {
         let api_key = match self.api_key() {
             Some(k) => k,
             None => {
-                debug!("no OpenAI API key present; returning static model list");
-                return Ok(Self::static_openai_models());
+                debug!("no OpenAI API key present; returning configured model fallback");
+                return Ok(self.configured_model_fallback());
             }
         };
 
@@ -547,37 +551,33 @@ impl Provider for OpenAiProvider {
         let response = match self.client.get(&url).bearer_auth(&api_key).send().await {
             Ok(r) => r,
             Err(e) => {
-                warn!("failed to fetch OpenAI models ({e}); using static list");
-                return Ok(Self::static_openai_models());
+                warn!("failed to fetch OpenAI models ({e}); returning configured model fallback");
+                return Ok(self.configured_model_fallback());
             }
         };
 
         if !response.status().is_success() {
             warn!(
-                "OpenAI /models returned {}; using static list",
+                "OpenAI /models returned {}; returning configured model fallback",
                 response.status()
             );
-            return Ok(Self::static_openai_models());
+            return Ok(self.configured_model_fallback());
         }
 
         let model_list: OaiModelList = match response.json().await {
             Ok(l) => l,
             Err(e) => {
-                warn!("failed to parse OpenAI /models response ({e}); using static list");
-                return Ok(Self::static_openai_models());
+                warn!(
+                    "failed to parse OpenAI /models response ({e}); returning configured model fallback"
+                );
+                return Ok(self.configured_model_fallback());
             }
         };
 
-        let static_map = Self::static_models_map();
         let models = model_list
             .data
             .into_iter()
-            .map(|entry| {
-                static_map
-                    .get(&entry.id)
-                    .cloned()
-                    .unwrap_or_else(|| ModelMetadata::new(entry.id, ModelCapabilities::default()))
-            })
+            .map(|entry| ModelMetadata::new(entry.id.clone(), infer_openai_capabilities(&entry.id)))
             .collect();
 
         Ok(models)
@@ -832,53 +832,77 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Static model table
+    // Capability inference
     // ------------------------------------------------------------------
 
     #[test]
-    fn test_openai_static_models_contains_expected_models() {
-        let models = OpenAiProvider::static_openai_models();
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&"gpt-4.1"));
-        assert!(ids.contains(&"gpt-4.1-mini"));
-        assert!(ids.contains(&"gpt-4o"));
-        assert!(ids.contains(&"gpt-4o-mini"));
-        assert!(ids.contains(&"o1"));
-        assert!(ids.contains(&"o3-mini"));
+    fn test_infer_openai_capabilities_gpt4o_has_tools_no_thinking() {
+        let caps = infer_openai_capabilities("gpt-4o");
+        assert!(caps.supports_tools);
+        assert!(caps.supports_structured_output);
+        assert!(!caps.supports_thinking);
+        assert!(caps.supports_streaming);
     }
 
     #[test]
-    fn test_openai_static_models_gpt4o_has_tool_support() {
-        let models = OpenAiProvider::static_openai_models();
-        let gpt4o = models.iter().find(|m| m.id == "gpt-4o").expect("gpt-4o");
-        assert!(gpt4o.capabilities.supports_tools);
-        assert!(gpt4o.capabilities.supports_streaming);
-        assert!(gpt4o.capabilities.supports_vision);
+    fn test_infer_openai_capabilities_o3_has_thinking() {
+        let caps = infer_openai_capabilities("o3");
+        assert!(caps.supports_thinking);
+        assert!(caps.supports_tools);
     }
 
     #[test]
-    fn test_openai_static_models_o1_has_thinking_support() {
-        let models = OpenAiProvider::static_openai_models();
-        let o1 = models.iter().find(|m| m.id == "o1").expect("o1");
-        assert!(o1.capabilities.supports_thinking);
+    fn test_infer_openai_capabilities_o1_has_thinking() {
+        let caps = infer_openai_capabilities("o1");
+        assert!(caps.supports_thinking);
+        assert!(!caps.supports_streaming); // o1 does not support streaming
     }
 
     #[test]
-    fn test_openai_static_models_gpt4o_mini_has_no_vision() {
-        let models = OpenAiProvider::static_openai_models();
-        let mini = models
-            .iter()
-            .find(|m| m.id == "gpt-4o-mini")
-            .expect("gpt-4o-mini");
-        assert!(!mini.capabilities.supports_vision);
+    fn test_infer_openai_capabilities_o3_mini_has_thinking() {
+        let caps = infer_openai_capabilities("o3-mini");
+        assert!(caps.supports_thinking);
+        assert!(caps.supports_streaming); // o3-mini supports streaming
     }
 
     #[test]
-    fn test_openai_static_models_o3_mini_has_thinking_support() {
-        let models = OpenAiProvider::static_openai_models();
-        let o3 = models.iter().find(|m| m.id == "o3-mini").expect("o3-mini");
-        assert!(o3.capabilities.supports_thinking);
-        assert!(!o3.capabilities.supports_streaming);
+    fn test_infer_openai_capabilities_gpt4o_mini_has_tools() {
+        let caps = infer_openai_capabilities("gpt-4o-mini");
+        assert!(caps.supports_tools);
+        assert!(!caps.supports_thinking);
+    }
+
+    #[test]
+    fn test_infer_openai_capabilities_embedding_model_has_no_tools() {
+        let caps = infer_openai_capabilities("text-embedding-3-small");
+        assert!(!caps.supports_tools);
+        assert!(!caps.supports_thinking);
+    }
+
+    #[test]
+    fn test_infer_openai_capabilities_unknown_model_has_conservative_defaults() {
+        let caps = infer_openai_capabilities("some-future-model-xyz");
+        assert!(caps.supports_tools); // assume chat model unless name says otherwise
+        assert!(!caps.supports_thinking);
+        assert_eq!(caps.context_window_tokens, 16_384);
+    }
+
+    #[test]
+    fn test_infer_openai_capabilities_o_series_gets_large_context() {
+        let caps = infer_openai_capabilities("o4-mini");
+        assert!(caps.supports_thinking);
+        assert_eq!(caps.context_window_tokens, 200_000);
+    }
+
+    #[test]
+    fn test_openai_provider_metadata_models_is_not_empty() {
+        // SAFETY: default config is always valid.
+        let provider = OpenAiProvider::from_config(&Config::default()).unwrap();
+        let meta = provider.metadata();
+        assert!(
+            !meta.models.is_empty(),
+            "metadata should include at least the configured model"
+        );
     }
 
     // ------------------------------------------------------------------

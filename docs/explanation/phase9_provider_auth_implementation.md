@@ -97,11 +97,17 @@ implementation supports any OpenAI-compatible endpoint, including Azure OpenAI
 Service, LocalAI, and other drop-in replacements, by reading the base URL from
 `provider.openai.base_url`. Endpoint security is enforced by default: the URL
 must begin with `https://` unless `allow_insecure_endpoint = true` is set in the
-provider configuration. The static model table includes `gpt-4.1`,
-`gpt-4.1-mini`, `gpt-4o`, `gpt-4o-mini`, `o1`, and `o3-mini`. Thinking is
-supported on `o1` and `o3-mini` through the `reasoning_effort` parameter. When
-the live `/v1/models` endpoint is unreachable the implementation falls back to
-the static table without surfacing an error to the caller.
+provider configuration. The static model table includes `gpt-4.1`, There is no
+hardcoded model list. The implementation always calls `GET {endpoint}/v1/models`
+with the configured API key. Capabilities for each returned model ID are derived
+by `infer_openai_capabilities()`, a pure function that applies pattern-based
+rules: o-series names (`o1`, `o3`, `o4`, etc.) receive
+`supports_thinking = true` and a 200 000-token context window; GPT-4 names
+receive a 128 000-token window; non-chat model names (embeddings, Whisper,
+DALL-E) receive `supports_tools = false`. When the live endpoint is unreachable,
+credentials are absent, or the response cannot be parsed, the fallback is a
+single-entry list for the currently configured model with inferred capabilities
+— not a frozen list of specific model IDs.
 
 ### Anthropic (`src/providers/anthropic.rs`)
 
@@ -112,9 +118,11 @@ required by the API. Thinking is supported on `claude-opus-4-5` and
 System-role messages are extracted from the conversation and sent as the
 top-level `system` field rather than embedded in the `messages` array, as
 required by the Anthropic message format. Tool definitions use Anthropic's
-`input_schema` field instead of OpenAI's `parameters` field. The implementation
-returns a static model list because the Anthropic API does not expose a public
-model enumeration endpoint.
+`input_schema` field instead of OpenAI's `parameters` field. Capabilities are
+derived by `infer_anthropic_capabilities()` at query time; the Anthropic models
+endpoint (`GET https://api.anthropic.com/v1/models`) is called dynamically, and
+on any failure the fallback is the single configured model with inferred
+capabilities.
 
 ### Ollama (`src/providers/ollama.rs`)
 
@@ -134,24 +142,46 @@ keyring and refreshed automatically on expiry. No thinking support is provided.
 The model list is static and reflects the models exposed through the GitHub
 Copilot API at the time of implementation.
 
-## Static Model Metadata
+## Dynamic Capability Inference
 
-The following table captures the capability flags encoded in the static model
-tables across all providers. These values are used by the model resolver when
-live capability discovery is not available.
+No hardcoded model lists exist anywhere in the codebase. Every provider fetches
+its model list from the live API at runtime and derives capabilities using a
+pure inference function.
 
-| Provider  | Model ID                 | Tools | Structured | Thinking | Streaming | Vision | Context (tokens) |
-| --------- | ------------------------ | ----- | ---------- | -------- | --------- | ------ | ---------------- |
-| OpenAI    | gpt-4.1                  | yes   | yes        | no       | yes       | yes    | 128 000          |
-| OpenAI    | gpt-4.1-mini             | yes   | yes        | no       | yes       | yes    | 128 000          |
-| OpenAI    | gpt-4o                   | yes   | yes        | no       | yes       | yes    | 128 000          |
-| OpenAI    | gpt-4o-mini              | yes   | yes        | no       | yes       | no     | 128 000          |
-| OpenAI    | o1                       | yes   | yes        | yes      | no        | no     | 200 000          |
-| OpenAI    | o3-mini                  | yes   | yes        | yes      | no        | no     | 200 000          |
-| Anthropic | claude-opus-4-5          | yes   | yes        | yes      | yes       | yes    | 200 000          |
-| Anthropic | claude-3-5-sonnet-latest | yes   | yes        | yes      | yes       | yes    | 200 000          |
-| Anthropic | claude-3-5-haiku-latest  | yes   | yes        | no       | yes       | yes    | 200 000          |
-| Anthropic | claude-3-opus-latest     | yes   | yes        | no       | yes       | yes    | 200 000          |
+### OpenAI — `infer_openai_capabilities(model_id)`
+
+| Pattern (lowercased ID)                                  | Capability inferred                               |
+| -------------------------------------------------------- | ------------------------------------------------- |
+| Starts with `o` + digit (`o1`, `o3`, `o4`, `o3-mini`...) | `supports_thinking = true`, 200 000-token context |
+| Contains `gpt-4`                                         | 128 000-token context window                      |
+| Contains `embedding`, `whisper`, `tts`, `dall-e`         | `supports_tools = false`                          |
+| Exactly `o1` or `o1-preview`                             | `supports_streaming = false`                      |
+| Contains `gpt-4o`, `gpt-4-vision`, `gpt-4.1`, `gpt-4.5`  | `supports_vision = true`                          |
+| Anything else                                            | chat model, 16 384-token context                  |
+
+### Anthropic — `infer_anthropic_capabilities(model_id)`
+
+| Pattern (lowercased ID)                                                 | Capability inferred                               |
+| ----------------------------------------------------------------------- | ------------------------------------------------- |
+| Contains `claude-3`, `claude-4`, `claude-opus-4`, `claude-sonnet-4`     | `supports_tools = true`, `supports_vision = true` |
+| Contains `claude-3-5`, `claude-3-7`, `claude-4`, or `claude-3` + `opus` | `supports_thinking = true`                        |
+| Modern model (claude-3+)                                                | 200 000-token context window                      |
+
+### Ollama — `infer_ollama_capabilities(model_id)`
+
+The tag suffix (`:latest`, `:7b`) is stripped before matching.
+
+| Pattern (base name)                                                 | Capability inferred      |
+| ------------------------------------------------------------------- | ------------------------ |
+| `mistral`, `llama3*`, `qwen`, `gemma2/3`, `mixtral`, `phi3/4`, etc. | `supports_tools = true`  |
+| `llava`, `bakllava`, `vision`, `minicpm-v`, `moondream`, `cogvlm`   | `supports_vision = true` |
+| Everything else                                                     | Conservative defaults    |
+
+All Ollama models receive `context_window_tokens = 32_768`. The actual context
+limit is controlled by Ollama's `num_ctx` parameter at runtime.
+
+All inference functions are conservative: when a model name is ambiguous the
+function returns `false` for uncertain capability flags.
 
 ## Model Capability Resolver
 
