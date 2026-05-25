@@ -5,6 +5,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod error;
 pub mod git;
+pub mod governance;
 pub mod providers;
 pub mod repository;
 pub mod scanner;

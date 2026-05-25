@@ -45,6 +45,8 @@ pub enum DiagnosticCategory {
     KafkaPublish,
     /// A diagnostic produced by an MCP operation.
     Mcp,
+    /// A diagnostic produced by the governance system.
+    Governance,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -57,6 +59,7 @@ impl fmt::Display for DiagnosticCategory {
             DiagnosticCategory::WatcherRouting => write!(f, "watcher_routing"),
             DiagnosticCategory::KafkaPublish => write!(f, "kafka_publish"),
             DiagnosticCategory::Mcp => write!(f, "mcp"),
+            DiagnosticCategory::Governance => write!(f, "governance"),
         }
     }
 }
@@ -409,6 +412,7 @@ mod tests {
             "kafka_publish"
         );
         assert_eq!(DiagnosticCategory::Mcp.to_string(), "mcp");
+        assert_eq!(DiagnosticCategory::Governance.to_string(), "governance");
     }
 
     #[test]
