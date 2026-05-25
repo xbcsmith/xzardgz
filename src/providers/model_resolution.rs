@@ -982,4 +982,41 @@ mod tests {
         assert_eq!(result.thinking_mode_selected, ThinkingMode::Low);
         assert_eq!(result.thinking_mode_requested, ThinkingMode::Auto);
     }
+
+    #[test]
+    fn test_resolve_with_static_uses_static_metadata_when_remote_unavailable_and_degraded_allowed()
+    {
+        let resolver = ModelResolver::new();
+        let ctx = ResolutionContext::new().with_cli(None, Some("my-model".to_string()));
+
+        let mut config = make_permissive_config();
+        config.model_metadata.allow_degraded_metadata = true;
+        config.model_selection.auto_fallback = false;
+
+        let available = vec![make_capable_model("my-model")];
+
+        // MetadataSource::Degraded indicates remote metadata was unavailable
+        // and static metadata is being used as a fallback.
+        // SAFETY: model is available in static list, requirements are permissive.
+        let result = resolver
+            .resolve_with_static(
+                &ctx,
+                &config,
+                &available,
+                "my-model",
+                MetadataSource::Degraded, // signals static fallback was used
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.metadata_source,
+            MetadataSource::Degraded,
+            "metadata_source should reflect that degraded static metadata was used"
+        );
+        assert_eq!(result.selected_model, "my-model");
+        assert!(
+            !result.fallback_used,
+            "fallback_used should be false when the requested model was found"
+        );
+    }
 }

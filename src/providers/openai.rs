@@ -943,4 +943,109 @@ mod tests {
         let provider = OpenAiProvider::from_config(&Config::default()).unwrap();
         assert!(provider.metadata().capabilities.tools);
     }
+
+    // ------------------------------------------------------------------
+    // list_models (mock server)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_openai_list_models_returns_available_models_from_models_endpoint() {
+        use wiremock::matchers::{header_exists, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // list_models builds: format!("{}/models", endpoint)
+        // Setting endpoint to "{base}/v1" makes the request hit /v1/models.
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header_exists("Authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "id": "gpt-4o" },
+                    { "id": "gpt-4.1-mini" },
+                    { "id": "o3" }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Set a unique test-only env var so the provider finds an API key.
+        // SAFETY: unique env var name used only in this test; no other test reads
+        // it, so there is no data race across threads.
+        unsafe {
+            std::env::set_var("XZARDGZ_TEST_OAI_MOCK_KEY", "sk-mock-key-for-test");
+        }
+
+        let config = Config {
+            openai: OpenAiConfig {
+                api_key_env: "XZARDGZ_TEST_OAI_MOCK_KEY".to_string(),
+                model: "gpt-4o".to_string(),
+                // Include /v1 so format!("{}/models", endpoint) resolves to /v1/models.
+                endpoint: format!("{}/v1", mock_server.uri()),
+                allow_insecure_endpoint: true, // mock server is HTTP
+            },
+            ..Config::default()
+        };
+
+        // SAFETY: config is valid; allow_insecure_endpoint permits HTTP.
+        let provider = OpenAiProvider::from_config(&config).unwrap();
+        let result = provider.list_models().await;
+
+        // Clean up the env var before assertions so it is removed on panic too.
+        // SAFETY: mirrors the set_var above; no concurrent access to this var.
+        unsafe {
+            std::env::remove_var("XZARDGZ_TEST_OAI_MOCK_KEY");
+        }
+
+        assert!(
+            result.is_ok(),
+            "list_models should succeed with mock server, got: {:?}",
+            result.err()
+        );
+        let models = result.unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            ids.contains(&"gpt-4o"),
+            "model list should contain gpt-4o; got: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"o3"),
+            "model list should contain o3; got: {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn test_openai_list_models_falls_back_to_static_when_no_api_key() {
+        // With no API key, list_models should fall back to static metadata.
+        temp_env::with_var("XZARDGZ_TEST_OAI_NO_KEY_ENV", None::<&str>, || {
+            let config = Config {
+                openai: OpenAiConfig {
+                    api_key_env: "XZARDGZ_TEST_OAI_NO_KEY_ENV".to_string(),
+                    model: "gpt-4o".to_string(),
+                    endpoint: "https://api.openai.com/v1".to_string(),
+                    allow_insecure_endpoint: false,
+                },
+                ..Config::default()
+            };
+            // SAFETY: config is valid with HTTPS endpoint.
+            let provider = OpenAiProvider::from_config(&config).unwrap();
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let result = rt.block_on(provider.list_models());
+            // Without a key the provider falls back to the static model table.
+            assert!(
+                result.is_ok(),
+                "list_models should succeed via static fallback when no API key, \
+                 got: {:?}",
+                result.err()
+            );
+            let models = result.unwrap();
+            assert!(
+                !models.is_empty(),
+                "static fallback model list must not be empty"
+            );
+        });
+    }
 }

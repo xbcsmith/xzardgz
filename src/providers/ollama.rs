@@ -589,4 +589,66 @@ mod tests {
         let caps_base = infer_ollama_capabilities("llama3.2");
         assert_eq!(caps_with_tag.supports_tools, caps_base.supports_tools);
     }
+
+    // ------------------------------------------------------------------
+    // list_models (mock server)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ollama_list_models_returns_available_models_from_api_tags() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Start a mock HTTP server.
+        let mock_server = MockServer::start().await;
+
+        // Register a GET /api/tags handler that returns two models.
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    { "name": "llama3:latest" },
+                    { "name": "mistral:7b" }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let provider = OllamaProvider::new(mock_server.uri(), "llama3:latest".to_string());
+        // SAFETY: mock server is running and returns valid JSON.
+        let models = provider.list_models().await.unwrap();
+        assert!(
+            !models.is_empty(),
+            "list_models should return at least one model from /api/tags"
+        );
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            ids.contains(&"llama3:latest"),
+            "model list should contain llama3:latest"
+        );
+        assert!(
+            ids.contains(&"mistral:7b"),
+            "model list should contain mistral:7b"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ollama_list_models_falls_back_to_static_when_server_unavailable() {
+        // Use a URL that will always refuse connections (port 1 is not reachable).
+        let provider = OllamaProvider::new(
+            "http://127.0.0.1:1".to_string(),
+            "llama3:latest".to_string(),
+        );
+        // The provider must fall back to static metadata rather than propagating an error.
+        let result = provider.list_models().await;
+        assert!(
+            result.is_ok(),
+            "list_models should succeed (fallback to static) when server is unreachable, \
+             got: {:?}",
+            result.err()
+        );
+        let models = result.unwrap();
+        // Static fallback should include the configured model.
+        assert!(!models.is_empty(), "fallback model list must not be empty");
+    }
 }

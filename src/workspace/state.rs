@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::error::{PipelineError, Result};
+use crate::providers::model_resolution::ResolvedModel;
 use crate::workspace::id::{WORKSPACE_STATE_VERSION, now_utc};
 use crate::workspace::stage::WorkspaceStage;
 
@@ -115,6 +116,14 @@ pub struct WorkspaceState {
     /// Whether the watcher result has been successfully published.
     #[serde(default)]
     pub watcher_result_published: bool,
+    /// The resolved model record from the model resolver.
+    ///
+    /// Set after the pre-flight model resolution pass. Contains the selected
+    /// provider, model, capability flags, thinking mode, and any diagnostics
+    /// produced during resolution. `None` before resolution runs or when the
+    /// pipeline is resumed from a state that pre-dates this field.
+    #[serde(default)]
+    pub resolved_model: Option<ResolvedModel>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +194,7 @@ impl WorkspaceState {
             plugin_diagnostics: HashMap::new(),
             watcher_task_id,
             watcher_result_published: false,
+            resolved_model: None,
         }
     }
 
@@ -663,6 +673,149 @@ mod tests {
             state.target_branch.as_deref(),
             Some("main"),
             "target_branch should be updated from metadata"
+        );
+    }
+
+    #[test]
+    fn test_workspace_state_resolved_model_is_none_by_default() {
+        let state = make_state();
+        assert!(
+            state.resolved_model.is_none(),
+            "resolved_model should be None when not set"
+        );
+    }
+
+    #[test]
+    fn test_workspace_state_resolved_model_can_be_set_and_serialized() {
+        use crate::diagnostics::Diagnostics;
+        use crate::providers::model_resolution::ResolvedModel;
+        use crate::providers::types::{MetadataSource, ModelCapabilities, ThinkingMode};
+
+        let mut state = make_state();
+        state.resolved_model = Some(ResolvedModel {
+            requested_provider: "openai".to_string(),
+            selected_provider: "openai".to_string(),
+            requested_model: Some("gpt-4o".to_string()),
+            selected_model: "gpt-4o".to_string(),
+            fallback_used: false,
+            fallback_reason: None,
+            capabilities: ModelCapabilities::default(),
+            thinking_mode_requested: ThinkingMode::None,
+            thinking_mode_selected: ThinkingMode::None,
+            metadata_source: MetadataSource::Static,
+            diagnostics: Diagnostics::new(),
+        });
+
+        // SAFETY: serialization of a valid WorkspaceState cannot fail.
+        let yaml = state.to_yaml().expect("SAFETY: serialization cannot fail");
+        assert!(
+            yaml.contains("resolved_model"),
+            "YAML should contain 'resolved_model' when set"
+        );
+        assert!(
+            yaml.contains("selected_model"),
+            "YAML should contain 'selected_model' field"
+        );
+        assert!(
+            yaml.contains("gpt-4o"),
+            "YAML should contain the model name"
+        );
+    }
+
+    #[test]
+    fn test_workspace_state_resolved_model_round_trips_through_yaml() {
+        use crate::diagnostics::Diagnostics;
+        use crate::providers::model_resolution::ResolvedModel;
+        use crate::providers::types::{MetadataSource, ModelCapabilities, ThinkingMode};
+
+        let mut state = make_state();
+        state.resolved_model = Some(ResolvedModel {
+            requested_provider: "anthropic".to_string(),
+            selected_provider: "anthropic".to_string(),
+            requested_model: Some("claude-3-5-sonnet-20241022".to_string()),
+            selected_model: "claude-3-5-sonnet-20241022".to_string(),
+            fallback_used: false,
+            fallback_reason: None,
+            capabilities: ModelCapabilities::default(),
+            thinking_mode_requested: ThinkingMode::Auto,
+            thinking_mode_selected: ThinkingMode::Low,
+            metadata_source: MetadataSource::Remote,
+            diagnostics: Diagnostics::new(),
+        });
+
+        // SAFETY: serialization of a valid WorkspaceState cannot fail.
+        let yaml = state.to_yaml().expect("SAFETY: serialization cannot fail");
+        // SAFETY: round-trip of just-serialized state cannot fail.
+        let loaded = WorkspaceState::load_from_str(&yaml).expect("SAFETY: round-trip cannot fail");
+
+        let resolved = loaded
+            .resolved_model
+            .expect("resolved_model should be present after round-trip");
+        assert_eq!(resolved.selected_provider, "anthropic");
+        assert_eq!(resolved.selected_model, "claude-3-5-sonnet-20241022");
+        assert_eq!(resolved.thinking_mode_requested, ThinkingMode::Auto);
+        assert_eq!(resolved.thinking_mode_selected, ThinkingMode::Low);
+        assert!(!resolved.fallback_used);
+    }
+
+    #[test]
+    fn test_workspace_state_with_fallback_resolved_model_round_trips() {
+        use crate::diagnostics::Diagnostics;
+        use crate::providers::model_resolution::ResolvedModel;
+        use crate::providers::types::{MetadataSource, ModelCapabilities, ThinkingMode};
+
+        let mut state = make_state();
+        state.resolved_model = Some(ResolvedModel {
+            requested_provider: "openai".to_string(),
+            selected_provider: "openai".to_string(),
+            requested_model: Some("gpt-5".to_string()),
+            selected_model: "gpt-4o".to_string(),
+            fallback_used: true,
+            fallback_reason: Some("gpt-5 not available".to_string()),
+            capabilities: ModelCapabilities::default(),
+            thinking_mode_requested: ThinkingMode::None,
+            thinking_mode_selected: ThinkingMode::None,
+            metadata_source: MetadataSource::Static,
+            diagnostics: Diagnostics::new(),
+        });
+
+        // SAFETY: serialization of a valid WorkspaceState cannot fail.
+        let yaml = state.to_yaml().expect("SAFETY: serialization cannot fail");
+        // SAFETY: round-trip of just-serialized state cannot fail.
+        let loaded = WorkspaceState::load_from_str(&yaml).expect("SAFETY: round-trip cannot fail");
+
+        let resolved = loaded
+            .resolved_model
+            .expect("resolved_model should be present");
+        assert!(resolved.fallback_used, "fallback_used should be true");
+        assert_eq!(
+            resolved.fallback_reason.as_deref(),
+            Some("gpt-5 not available"),
+            "fallback_reason should round-trip correctly"
+        );
+        assert_eq!(resolved.selected_model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_workspace_state_load_from_legacy_yaml_without_resolved_model_field() {
+        // A state YAML that does NOT have resolved_model should still load
+        // successfully due to #[serde(default)].
+        let legacy_yaml = r#"
+version: "1"
+workspace_id: "01TESTLEGACY0000000000000"
+repository_url: "https://github.com/example/legacy"
+repository_hash: "abc123"
+current_stage:
+  kind: initializing
+created_at: "2024-01-01T00:00:00Z"
+updated_at: "2024-01-01T00:00:00Z"
+"#;
+
+        let loaded = WorkspaceState::load_from_str(legacy_yaml)
+            .expect("legacy YAML without resolved_model should load successfully");
+        assert!(
+            loaded.resolved_model.is_none(),
+            "resolved_model should be None when loading legacy state"
         );
     }
 
