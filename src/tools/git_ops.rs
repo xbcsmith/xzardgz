@@ -26,6 +26,12 @@ impl GitStatusTool {
 
 #[async_trait]
 impl ToolExecutor for GitStatusTool {
+    /// Returns the tool definition for `git_status`.
+    fn tool_definition(&self) -> Tool {
+        GitStatusTool::definition()
+    }
+
+    /// Runs `git status` in the current working directory and returns the output.
     async fn execute(&self, _params: Value) -> Result<ToolResult> {
         let output = Command::new("git")
             .arg("status")

@@ -1,23 +1,28 @@
 use std::sync::Arc;
-use tempfile::NamedTempFile;
+use tempfile::TempDir;
 use xzardgz::providers::types::{FunctionCall, ToolCall};
 use xzardgz::tools::executor::ToolExecutionDispatcher;
 use xzardgz::tools::file_ops::{ReadFileTool, WriteFileTool};
 use xzardgz::tools::registry::ToolRegistry;
+use xzardgz::tools::sandbox::PathValidator;
 
 #[tokio::test]
 async fn test_tool_execution() {
-    let mut registry = ToolRegistry::new();
+    let dir = TempDir::new().unwrap();
+    let validator = Arc::new(PathValidator::new(
+        vec![dir.path().to_path_buf()],
+        vec![dir.path().to_path_buf()],
+    ));
 
-    // Register tools
-    registry.register(ReadFileTool::definition(), Arc::new(ReadFileTool));
-    registry.register(WriteFileTool::definition(), Arc::new(WriteFileTool));
+    let mut registry = ToolRegistry::new();
+    registry.register_executor(Arc::new(ReadFileTool::new(validator.clone())));
+    registry.register_executor(Arc::new(WriteFileTool::new(validator.clone())));
 
     let dispatcher = ToolExecutionDispatcher::new(Arc::new(registry));
 
-    // Test Write
-    let temp_file = NamedTempFile::new().unwrap();
-    let path = temp_file.path().to_str().unwrap().to_string();
+    // Write a file inside the sandbox zone
+    let file_path = dir.path().join("test_output.txt");
+    let path = file_path.to_str().unwrap().to_string();
 
     let write_call = ToolCall {
         id: "call_1".to_string(),
@@ -31,7 +36,7 @@ async fn test_tool_execution() {
     assert!(result.error.is_none());
     assert!(result.output.contains("Successfully wrote"));
 
-    // Test Read
+    // Read the file back
     let read_call = ToolCall {
         id: "call_2".to_string(),
         function: FunctionCall {
