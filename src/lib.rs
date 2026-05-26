@@ -14,5 +14,6 @@ pub mod telemetry;
 pub mod tools;
 pub mod workspace;
 
+pub mod mcp;
 pub mod workflow;
 pub mod xzepr;
