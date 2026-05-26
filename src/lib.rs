@@ -13,6 +13,7 @@ pub mod repository;
 pub mod scanner;
 pub mod telemetry;
 pub mod tools;
+pub mod watcher;
 pub mod workspace;
 
 pub mod plugins;

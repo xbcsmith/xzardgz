@@ -3,19 +3,34 @@
 //! This module implements the `watch` subcommand, which starts the pipeline
 //! watcher that consumes task events from Kafka, executes plugins, and
 //! publishes results back to the configured output topic.
+//!
+//! The watcher execution flow is:
+//! 1. Load and validate configuration.
+//! 2. Build a `WatcherMatcher` from matcher config.
+//! 3. Build a `WatcherExecutor` with the configured plugin registry.
+//! 4. When `--dry-run` is set, validate and report configuration then exit.
+//! 5. When `--once` is set, print once-mode notice; the consumer will exit
+//!    after the first batch (full consumer loop implemented in Phase 17).
+//! 6. Otherwise, start the Kafka consumer loop (Phase 17).
+
+use std::sync::Arc;
 
 use crate::cli::WatchArgs;
 use crate::config::{Config, ConfigOverrides};
 use crate::error::Result;
+use crate::plugins::registry::PluginRegistry;
+use crate::watcher::executor::WatcherExecutor;
+use crate::watcher::matcher::WatcherMatcher;
 
 /// Executes the watcher mode command.
 ///
-/// Loads global configuration, applies CLI overrides for provider, model,
-/// workspace, and prints startup information. In dry-run or once-mode the
-/// appropriate notice is printed before the stub message.
+/// Loads global configuration, applies CLI overrides, builds a
+/// [`WatcherMatcher`] and [`WatcherExecutor`], and reports startup
+/// information.
 ///
-/// Full watcher execution (Kafka consumer loop, task dispatch, result
-/// publishing) is implemented in a later phase.
+/// In dry-run mode the watcher validates configuration and exits without
+/// connecting to Kafka. In once mode the watcher will process a single task
+/// batch and exit (full consumer loop is wired in Phase 17).
 ///
 /// # Arguments
 ///
@@ -24,7 +39,7 @@ use crate::error::Result;
 /// # Errors
 ///
 /// Returns [`crate::error::PipelineError::Config`] if configuration loading
-/// fails.
+/// or validation fails.
 pub async fn execute(args: WatchArgs) -> Result<()> {
     let mut config = Config::load()?;
 
@@ -37,12 +52,59 @@ pub async fn execute(args: WatchArgs) -> Result<()> {
     };
     config.apply_overrides(&overrides);
 
-    if args.dry_run {
-        println!("Dry run mode: watcher will not process messages.");
+    // Apply CLI overrides for Kafka settings.
+    if let Some(ref brokers) = args.brokers {
+        config.kafka.brokers = brokers.split(',').map(|s| s.trim().to_string()).collect();
+    }
+    if let Some(ref input_topic) = args.input_topic {
+        config.topics.task = input_topic.clone();
+    }
+    if let Some(ref output_topic) = args.output_topic {
+        config.topics.result = output_topic.clone();
+    }
+    if let Some(max_concurrent) = args.max_concurrent {
+        config.watcher.max_concurrent_tasks = max_concurrent as u32;
+    }
+    if args.no_publish {
+        config.watcher.result_publish_enabled = false;
+    }
+    if args.once {
+        config.watcher.once = true;
     }
 
-    if args.once {
-        println!("Once mode: watcher will process one task then exit.");
+    let config = Arc::new(config);
+
+    // Build the plugin registry (empty for now; plugins registered in Phase 17).
+    let plugin_registry = Arc::new(PluginRegistry::new());
+
+    // Build the matcher from config.
+    let matcher = WatcherMatcher::from_config(&config.matcher);
+
+    // Build the watcher executor.
+    let executor = WatcherExecutor::new(config.clone(), plugin_registry);
+
+    // Log startup information.
+    if args.dry_run {
+        println!("Dry run mode: watcher will validate configuration and exit.");
+        println!(
+            "  Matcher: {} event types, {} plugins configured.",
+            config.matcher.event_types.len(),
+            config.matcher.plugins.len(),
+        );
+        println!(
+            "  Executor: once={}, max_concurrent={}, publish={}",
+            executor.once_mode_enabled(),
+            executor.max_concurrent_tasks(),
+            executor.result_publish_enabled(),
+        );
+        if matcher.is_empty() {
+            println!("  WARNING: matcher is empty - all tasks will be rejected.");
+        }
+        return Ok(());
+    }
+
+    if executor.once_mode_enabled() {
+        println!("Once mode: watcher will process one task batch then exit.");
     }
 
     if let Some(ref provider) = args.provider {
@@ -53,23 +115,22 @@ pub async fn execute(args: WatchArgs) -> Result<()> {
         println!("Workspace: {}", workspace);
     }
 
-    if let Some(ref brokers) = args.brokers {
-        println!("Kafka brokers: {}", brokers);
+    println!(
+        "Kafka task topic: {}  result topic: {}",
+        config.topics.task, config.topics.result,
+    );
+    println!(
+        "Watcher started: once={}, max_concurrent={}, publish={}",
+        executor.once_mode_enabled(),
+        executor.max_concurrent_tasks(),
+        executor.result_publish_enabled(),
+    );
+
+    if matcher.is_empty() {
+        println!("WARNING: matcher is empty - all tasks will be rejected.");
     }
 
-    if let Some(ref input_topic) = args.input_topic {
-        println!("Input topic: {}", input_topic);
-    }
-
-    if let Some(ref output_topic) = args.output_topic {
-        println!("Output topic: {}", output_topic);
-    }
-
-    if let Some(max_concurrent) = args.max_concurrent {
-        println!("Max concurrent tasks: {}", max_concurrent);
-    }
-
-    println!("Watcher execution is implemented in a later phase.");
+    println!("Watcher consumer loop is implemented in Phase 17.");
     Ok(())
 }
 
@@ -131,6 +192,46 @@ mod tests {
             result.is_ok(),
             "watch default should succeed, got: {:?}",
             result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_brokers_override_returns_ok() {
+        let mut args = make_default_watch_args();
+        args.brokers = Some("kafka1:9092,kafka2:9092".to_string());
+        let result = execute(args).await;
+        assert!(result.is_ok(), "watch with brokers should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_no_publish_returns_ok() {
+        let mut args = make_default_watch_args();
+        args.no_publish = true;
+        let result = execute(args).await;
+        assert!(result.is_ok(), "watch with no_publish should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_max_concurrent_override_returns_ok() {
+        let mut args = make_default_watch_args();
+        args.max_concurrent = Some(4);
+        let result = execute(args).await;
+        assert!(
+            result.is_ok(),
+            "watch with max_concurrent override should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_dry_run_with_topic_overrides_returns_ok() {
+        let mut args = make_default_watch_args();
+        args.dry_run = true;
+        args.input_topic = Some("my.tasks".to_string());
+        args.output_topic = Some("my.results".to_string());
+        let result = execute(args).await;
+        assert!(
+            result.is_ok(),
+            "watch dry run with topic overrides should succeed"
         );
     }
 }
