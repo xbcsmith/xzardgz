@@ -145,6 +145,51 @@ impl ConfidenceScorer {
 }
 
 // ---------------------------------------------------------------------------
+// Convenience: finding confidence
+// ---------------------------------------------------------------------------
+
+/// Computes a final finding confidence by combining scanner-derived signals
+/// with an AI-reported confidence value.
+///
+/// The AI confidence is treated as a signal with weight `2.0`, giving it
+/// roughly double the influence of any single scanner signal (which each
+/// carry weight `1.0` by default).  The result is clamped to `[0.0, 1.0]`.
+///
+/// # Arguments
+///
+/// * `ai_confidence`   - Confidence reported by the AI provider in `[0.0, 1.0]`.
+/// * `scanner_signals` - Additional signals derived from static scanner analysis.
+///
+/// # Returns
+///
+/// A weighted-average confidence in `[0.0, 1.0]`.  Returns the clamped
+/// `ai_confidence` when `scanner_signals` is empty.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::scanner::scoring::{ScoringSignal, compute_finding_confidence};
+///
+/// // Pure AI confidence with no scanner signals
+/// let conf = compute_finding_confidence(0.8, &[]);
+/// assert!((conf - 0.8).abs() < 1e-9);
+///
+/// // AI confidence blended with a scanner signal
+/// let signals = [ScoringSignal::new("pattern_hit", 1.0, 1.0)];
+/// let blended = compute_finding_confidence(0.6, &signals);
+/// // weighted avg of (0.6 * 2.0 + 1.0 * 1.0) / 3.0 = 2.2 / 3.0 ≈ 0.733
+/// assert!((blended - (2.2 / 3.0)).abs() < 1e-9);
+/// ```
+pub fn compute_finding_confidence(ai_confidence: f64, scanner_signals: &[ScoringSignal]) -> f64 {
+    let mut input = ScoringInput::new();
+    input.add_signal(ScoringSignal::new("ai_confidence", 2.0, ai_confidence));
+    for signal in scanner_signals {
+        input.add_signal(signal.clone());
+    }
+    ConfidenceScorer::new().score(&input)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -235,5 +280,54 @@ mod tests {
         input.add_signal(ScoringSignal::new("no_weight", 0.0, 0.9));
         let score = scorer.score(&input);
         assert!((score - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ------------------------------------------------------------------
+    // compute_finding_confidence
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_finding_confidence_no_scanner_signals_returns_ai_confidence() {
+        let conf = compute_finding_confidence(0.8, &[]);
+        assert!((conf - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_compute_finding_confidence_zero_ai_with_full_scanner_signal() {
+        // ai=0.0 (weight 2.0), scanner=1.0 (weight 1.0) => (0.0*2+1.0*1)/3 = 0.333...
+        let signals = [ScoringSignal::new("hit", 1.0, 1.0)];
+        let conf = compute_finding_confidence(0.0, &signals);
+        assert!((conf - (1.0 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_compute_finding_confidence_blends_ai_and_scanner_signals() {
+        // ai=0.6 (weight 2.0), scanner=1.0 (weight 1.0) => (0.6*2+1.0*1)/3 = 2.2/3
+        let signals = [ScoringSignal::new("pattern_hit", 1.0, 1.0)];
+        let conf = compute_finding_confidence(0.6, &signals);
+        assert!((conf - (2.2 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_compute_finding_confidence_clamps_above_one() {
+        let conf = compute_finding_confidence(2.0, &[]);
+        assert!((conf - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_finding_confidence_clamps_below_zero() {
+        let conf = compute_finding_confidence(-1.0, &[]);
+        assert!((conf - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_finding_confidence_multiple_scanner_signals_blends_correctly() {
+        // ai=0.5 (w=2), s1=1.0 (w=1), s2=0.0 (w=1) => (0.5*2+1.0+0.0)/4 = 2.0/4 = 0.5
+        let signals = [
+            ScoringSignal::new("s1", 1.0, 1.0),
+            ScoringSignal::new("s2", 1.0, 0.0),
+        ];
+        let conf = compute_finding_confidence(0.5, &signals);
+        assert!((conf - 0.5).abs() < 1e-9);
     }
 }

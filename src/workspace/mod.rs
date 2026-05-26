@@ -370,6 +370,37 @@ impl WorkspaceManager {
         self.save()
     }
 
+    /// Persists a numeric score for a plugin step to the workspace state.
+    ///
+    /// Stores `score` under `step_id` in [`WorkspaceState::plugin_scores`].
+    /// Calling this method again with the same `step_id` replaces the
+    /// previous score.
+    ///
+    /// # Arguments
+    ///
+    /// * `step_id` - The step identifier whose score is being recorded.
+    /// * `score` - The numeric score value (conventionally in `[0.0, 1.0]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Workspace`] if state cannot be saved.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use xzardgz::workspace::WorkspaceManager;
+    /// # fn example(mut ws: WorkspaceManager) -> xzardgz::error::Result<()> {
+    /// ws.record_plugin_score("step-1", 0.85)?;
+    /// assert_eq!(*ws.state.plugin_scores.get("step-1").unwrap(), 0.85);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn record_plugin_score(&mut self, step_id: &str, score: f64) -> Result<()> {
+        self.state.plugin_scores.insert(step_id.to_string(), score);
+        self.state.updated_at = now_utc();
+        self.save()
+    }
+
     /// Returns the workspace ID (ULID string).
     pub fn id(&self) -> &str {
         &self.state.workspace_id
@@ -942,5 +973,64 @@ mod tests {
             Some(local_path.as_str()),
             "local_repository_path should persist to disk"
         );
+    }
+
+    #[test]
+    fn test_record_plugin_score_persists_score_for_step() {
+        let dir = temp_dir();
+        let mut manager =
+            WorkspaceManager::create(root(&dir), "https://example.com/score-test", None, None)
+                .expect("SAFETY: create should succeed on a writable temp dir");
+
+        manager
+            .record_plugin_score("step-1", 0.85)
+            .expect("SAFETY: record_plugin_score should succeed");
+
+        let score = manager.state.plugin_scores.get("step-1").copied();
+        assert_eq!(score, Some(0.85), "score should be stored under step-1");
+    }
+
+    #[test]
+    fn test_record_plugin_score_replaces_existing_score() {
+        let dir = temp_dir();
+        let mut manager = WorkspaceManager::create(
+            root(&dir),
+            "https://example.com/score-replace-test",
+            None,
+            None,
+        )
+        .expect("SAFETY: create should succeed on a writable temp dir");
+
+        manager
+            .record_plugin_score("step-x", 0.5)
+            .expect("SAFETY: first record_plugin_score should succeed");
+        manager
+            .record_plugin_score("step-x", 0.9)
+            .expect("SAFETY: second record_plugin_score should succeed");
+
+        let score = manager.state.plugin_scores.get("step-x").copied();
+        assert_eq!(score, Some(0.9), "second score should replace the first");
+    }
+
+    #[test]
+    fn test_record_plugin_score_survives_reload() {
+        let dir = temp_dir();
+        let mut manager = WorkspaceManager::create(
+            root(&dir),
+            "https://example.com/score-reload-test",
+            None,
+            None,
+        )
+        .expect("SAFETY: create should succeed on a writable temp dir");
+        let ws_id = manager.id().to_string();
+
+        manager
+            .record_plugin_score("step-persist", 0.72)
+            .expect("SAFETY: record_plugin_score should succeed");
+
+        let loaded =
+            WorkspaceManager::load(root(&dir), &ws_id).expect("SAFETY: reload should succeed");
+        let score = loaded.state.plugin_scores.get("step-persist").copied();
+        assert_eq!(score, Some(0.72), "score should survive a reload cycle");
     }
 }

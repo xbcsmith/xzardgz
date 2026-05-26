@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod git;
 pub mod governance;
+pub mod investigation;
 pub mod providers;
 pub mod repository;
 pub mod scanner;
@@ -14,6 +15,9 @@ pub mod telemetry;
 pub mod tools;
 pub mod workspace;
 
+pub mod plugins;
+
 pub mod mcp;
+pub mod reports;
 pub mod workflow;
 pub mod xzepr;
