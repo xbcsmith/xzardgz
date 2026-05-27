@@ -1,10 +1,10 @@
-# Technical Review Report
+# Security Review Report
 
 Generated at: 2026-05-27T13:49:30Z
 
 Repository: test-repo (https://github.com/org/test-repo)
 
-Workspace: 01KSMV53XJQKJK9MNMSRRNDSN7
+Workspace: 01KSMV53PC7Z7JRWZRJRSYJTNH
 
 ## Summary
 
@@ -14,7 +14,7 @@ Frameworks: None detected
 
 Total findings: 0
 
-## Findings by Dimension
+## Findings by Category
 
 *No findings recorded.*
 

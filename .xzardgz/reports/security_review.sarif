@@ -1,0 +1,15 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "security-review",
+          "version": "1.0.0",
+          "rules": []
+        }
+      },
+      "results": []
+    }
+  ]
+}

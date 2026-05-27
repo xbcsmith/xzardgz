@@ -652,34 +652,129 @@ impl Default for TechnicalReviewConfig {
     }
 }
 
-/// Security review plugin configuration.
+/// Default max_findings value for security review.
+fn default_sec_max_findings() -> u32 {
+    50
+}
+
+/// Default severity threshold for security review.
+fn default_sec_severity_threshold() -> String {
+    "medium".to_string()
+}
+
+/// Default batch size for security review.
+fn default_sec_batch_size() -> u32 {
+    10
+}
+
+/// Default verification turns for security review.
+fn default_sec_verification_turns() -> u32 {
+    1
+}
+
+/// Default confidence threshold for security review.
+fn default_sec_confidence_threshold() -> f64 {
+    0.5
+}
+
+/// Default report formats for security review.
+fn default_sec_report_formats() -> Vec<String> {
+    vec![
+        "markdown".to_string(),
+        "json".to_string(),
+        "sarif".to_string(),
+    ]
+}
+
+/// Configuration for the built-in security review plugin.
+///
+/// Controls which checks run, how findings are thresholded, and what output
+/// formats are generated.  SARIF output is enabled by default when the
+/// security review plugin runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReviewConfig {
+    /// Whether the security review plugin is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Directory to load custom security review prompt templates from.
+    #[serde(default)]
+    pub prompt_dir: String,
     /// Maximum number of findings to include in the report.
-    #[serde(default)]
+    #[serde(default = "default_sec_max_findings")]
     pub max_findings: u32,
-    /// Minimum severity level for a finding to be reported.
-    #[serde(default)]
+    /// Minimum severity level for a finding to be included.
+    #[serde(default = "default_sec_severity_threshold")]
     pub severity_threshold: String,
-    /// Whether to include a SARIF-format report.
-    #[serde(default)]
+    /// Whether to include a SARIF-format report alongside Markdown and JSON.
+    #[serde(default = "default_true")]
     pub include_sarif: bool,
     /// Output formats for the generated report.
-    #[serde(default)]
+    #[serde(default = "default_sec_report_formats")]
     pub report_formats: Vec<String>,
+    /// Run secret pattern scanning.
+    #[serde(default = "default_true")]
+    pub secret_scanning: bool,
+    /// Scan dependency manifests for known-vulnerable packages.
+    #[serde(default = "default_true")]
+    pub dependency_scanning: bool,
+    /// Check for unsafe Rust code blocks.
+    #[serde(default = "default_true")]
+    pub check_unsafe_code: bool,
+    /// Check authentication and authorization code.
+    #[serde(default = "default_true")]
+    pub check_auth: bool,
+    /// Check for hardcoded or suspicious endpoints.
+    #[serde(default = "default_true")]
+    pub check_endpoints: bool,
+    /// Check for OS command execution patterns.
+    #[serde(default = "default_true")]
+    pub check_command_execution: bool,
+    /// Check for unsafe deserialization patterns.
+    #[serde(default = "default_true")]
+    pub check_deserialization: bool,
+    /// Check for weak or misused cryptography.
+    #[serde(default = "default_true")]
+    pub check_cryptography: bool,
+    /// When true, the plugin returns a failure exit code if any critical
+    /// finding is present.
+    #[serde(default)]
+    pub fail_on_critical: bool,
+    /// Number of files to include in each AI analysis batch.
+    #[serde(default = "default_sec_batch_size")]
+    pub batch_size: u32,
+    /// Optional provider model override for the security review step.
+    #[serde(default)]
+    pub model_override: Option<String>,
+    /// Number of verification turns to request from the AI provider.
+    #[serde(default = "default_sec_verification_turns")]
+    pub verification_turns: u32,
+    /// Minimum AI confidence score `[0.0, 1.0]` for a finding to be included.
+    #[serde(default = "default_sec_confidence_threshold")]
+    pub confidence_threshold: f64,
 }
 
 impl Default for SecurityReviewConfig {
     fn default() -> Self {
         Self {
-            max_findings: 25,
-            severity_threshold: "medium".to_string(),
+            enabled: true,
+            prompt_dir: String::new(),
+            max_findings: default_sec_max_findings(),
+            severity_threshold: default_sec_severity_threshold(),
             include_sarif: true,
-            report_formats: vec![
-                "markdown".to_string(),
-                "json".to_string(),
-                "sarif".to_string(),
-            ],
+            report_formats: default_sec_report_formats(),
+            secret_scanning: true,
+            dependency_scanning: true,
+            check_unsafe_code: true,
+            check_auth: true,
+            check_endpoints: true,
+            check_command_execution: true,
+            check_deserialization: true,
+            check_cryptography: true,
+            fail_on_critical: false,
+            batch_size: default_sec_batch_size(),
+            model_override: None,
+            verification_turns: default_sec_verification_turns(),
+            confidence_threshold: default_sec_confidence_threshold(),
         }
     }
 }
