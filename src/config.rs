@@ -556,31 +556,98 @@ impl Default for PluginsConfig {
 /// Technical review plugin configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TechnicalReviewConfig {
-    /// Maximum number of findings to include in the report.
+    /// Whether the technical review plugin is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Optional path to a directory containing custom prompt templates.
+    /// When `None`, built-in default prompts are used.
     #[serde(default)]
+    pub prompt_dir: Option<String>,
+    /// Maximum number of repository files to include in a single analysis.
+    #[serde(default = "default_max_files")]
+    pub max_files: u32,
+    /// Whether to include test files in the analysis.
+    #[serde(default = "default_true")]
+    pub include_tests: bool,
+    /// Whether to include documentation files in the analysis.
+    #[serde(default = "default_true")]
+    pub include_docs: bool,
+    /// Number of files per AI request batch.
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u32,
+    /// Optional model identifier override for this plugin.
+    /// When `None`, the global provider model is used.
+    #[serde(default)]
+    pub model_override: Option<String>,
+    /// Number of verification passes the AI performs over initial findings.
+    #[serde(default = "default_verification_turns")]
+    pub verification_turns: u32,
+    /// Minimum AI confidence score `[0.0, 1.0]` for a finding to be included.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+    /// Maximum number of findings to include in the report.
+    #[serde(default = "default_max_findings")]
     pub max_findings: u32,
     /// Minimum severity level for a finding to be reported.
-    #[serde(default)]
+    #[serde(default = "default_severity_threshold")]
     pub severity_threshold: String,
     /// Code quality dimensions to focus the review on.
+    /// When empty, all 14 dimensions are evaluated.
     #[serde(default)]
     pub focus_areas: Vec<String>,
-    /// Output formats for the generated report.
-    #[serde(default)]
+    /// Output formats for the generated report (e.g. `["markdown", "json"]`).
+    #[serde(default = "default_report_formats")]
     pub report_formats: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_files() -> u32 {
+    50
+}
+
+fn default_batch_size() -> u32 {
+    10
+}
+
+fn default_verification_turns() -> u32 {
+    1
+}
+
+fn default_confidence_threshold() -> f64 {
+    0.7
+}
+
+fn default_max_findings() -> u32 {
+    25
+}
+
+fn default_severity_threshold() -> String {
+    "medium".to_string()
+}
+
+fn default_report_formats() -> Vec<String> {
+    vec!["markdown".to_string(), "json".to_string()]
 }
 
 impl Default for TechnicalReviewConfig {
     fn default() -> Self {
         Self {
-            max_findings: 25,
-            severity_threshold: "medium".to_string(),
-            focus_areas: vec![
-                "architecture".to_string(),
-                "reliability".to_string(),
-                "maintainability".to_string(),
-            ],
-            report_formats: vec!["markdown".to_string(), "json".to_string()],
+            enabled: default_true(),
+            prompt_dir: None,
+            max_files: default_max_files(),
+            include_tests: default_true(),
+            include_docs: default_true(),
+            batch_size: default_batch_size(),
+            model_override: None,
+            verification_turns: default_verification_turns(),
+            confidence_threshold: default_confidence_threshold(),
+            max_findings: default_max_findings(),
+            severity_threshold: default_severity_threshold(),
+            focus_areas: vec![],
+            report_formats: default_report_formats(),
         }
     }
 }

@@ -34,6 +34,7 @@
 pub mod context;
 pub mod output;
 pub mod registry;
+pub mod technical_review;
 pub mod trait_def;
 
 pub use context::{PluginContext, ToolAccessLevel};

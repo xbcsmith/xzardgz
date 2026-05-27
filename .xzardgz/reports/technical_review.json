@@ -1,0 +1,19 @@
+{
+  "version": "1",
+  "report_id": "01KSMJ31VCZXSAWXDMNJTJHKN9",
+  "generated_at": "2026-05-27T11:11:05.581165Z",
+  "plugin_name": "technical-review",
+  "repository_name": "test-repo",
+  "repository_url": "https://github.com/org/test-repo",
+  "head_commit": null,
+  "workspace_id": "01KSMJ31V8HZG5VB2RMQPQ63T6",
+  "scan_artifact_version": null,
+  "provider_metadata": null,
+  "model_id": null,
+  "findings": {
+    "findings": []
+  },
+  "diagnostics": [],
+  "risk_band": null,
+  "scores": {}
+}
