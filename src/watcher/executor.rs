@@ -2,7 +2,8 @@
 //!
 //! [`WatcherExecutor`] is the core processing engine for a single watcher task.
 //! It validates the incoming [`WatcherTaskMessage`], optionally short-circuits
-//! for dry runs, runs the plugin stub (full execution wired in Phase 17), and
+//! for dry runs, delegates real plugin execution to the shared
+//! [`WorkflowExecutor`][crate::workflow::executor::WorkflowExecutor], and
 //! returns a [`WatcherResultMessage`] to the caller.  Publishing the result
 //! back to Kafka is either done inline via [`WatcherExecutor::process_task`]
 //! or with failure tracking via
@@ -22,6 +23,7 @@ use crate::watcher::event_type::WatcherEventType;
 use crate::watcher::publisher::{PublishFailureState, ResultPublisher};
 use crate::watcher::result::WatcherResultMessage;
 use crate::watcher::task::WatcherTaskMessage;
+use crate::workflow::executor::{ExecutionInput, WorkflowExecutor};
 
 // ---------------------------------------------------------------------------
 // WatcherExecutor
@@ -31,9 +33,9 @@ use crate::watcher::task::WatcherTaskMessage;
 ///
 /// The executor is decoupled from Kafka transport.  It receives a
 /// [`WatcherTaskMessage`], validates the plugin, optionally short-circuits for
-/// dry runs, runs the plugin (stub in Phase 14; full execution in Phase 17),
-/// and returns a [`WatcherResultMessage`].  Publishing the result to Kafka is
-/// the caller's responsibility or is optionally done inline when
+/// dry runs, and delegates real plugin execution to the shared
+/// [`WorkflowExecutor`].  Publishing the result to Kafka is the caller's
+/// responsibility or is optionally done inline when
 /// `config.watcher.result_publish_enabled` is `true`.
 ///
 /// # Examples
@@ -52,6 +54,7 @@ use crate::watcher::task::WatcherTaskMessage;
 pub struct WatcherExecutor {
     config: Arc<Config>,
     plugin_registry: Arc<PluginRegistry>,
+    workflow_executor: Arc<WorkflowExecutor>,
 }
 
 impl WatcherExecutor {
@@ -80,9 +83,14 @@ impl WatcherExecutor {
     /// assert_eq!(executor.max_concurrent_tasks(), 2);
     /// ```
     pub fn new(config: Arc<Config>, plugin_registry: Arc<PluginRegistry>) -> Self {
+        let workflow_executor = Arc::new(WorkflowExecutor::new(
+            config.clone(),
+            plugin_registry.clone(),
+        ));
         Self {
             config,
             plugin_registry,
+            workflow_executor,
         }
     }
 
@@ -250,9 +258,49 @@ impl WatcherExecutor {
         publisher: &dyn ResultPublisher,
     ) -> Result<WatcherResultMessage> {
         let started_at = Utc::now();
-        let (result, should_publish) = self.build_result_for_task(&task, started_at);
 
-        if should_publish && self.config.watcher.result_publish_enabled {
+        // Step 1: Validate the task (plugin registered and enabled).
+        if let Err(e) = self.validate_task(&task) {
+            let (result, _) = self.build_result_for_task(&task, started_at);
+            let mut result = result;
+            result.errors.push(e.to_string());
+            // Do not publish validation failures.
+            return Ok(result);
+        }
+
+        // Step 2: Dry-run short-circuit.
+        if task.dry_run {
+            let (mut result, _) = self.build_result_for_task(&task, started_at);
+            result.diagnostics.push(Diagnostic::info(
+                DiagnosticCategory::Plugin,
+                format!("dry-run: plugin '{}' was not executed", task.plugin),
+            ));
+            result = result.success_result();
+            if self.config.watcher.result_publish_enabled {
+                publisher.publish(&result).await?;
+            }
+            return Ok(result);
+        }
+
+        // Step 3: Full execution via the shared WorkflowExecutor.
+        let exec_input = ExecutionInput::WatcherTask(Box::new(task.clone()));
+        let result = match self.workflow_executor.execute(exec_input).await {
+            Ok(exec_result) => exec_result.watcher_result.unwrap_or_else(|| {
+                // WatcherTask input always produces a watcher_result; this
+                // branch is a safety net.
+                let (mut r, _) = self.build_result_for_task(&task, started_at);
+                r.errors
+                    .push("workflow executor returned no watcher result".to_string());
+                r
+            }),
+            Err(e) => {
+                let (mut r, _) = self.build_result_for_task(&task, started_at);
+                r.errors.push(e.to_string());
+                r
+            }
+        };
+
+        if self.config.watcher.result_publish_enabled {
             publisher.publish(&result).await?;
         }
 
@@ -302,10 +350,56 @@ impl WatcherExecutor {
     ) -> Result<WatcherResultMessage> {
         let started_at = Utc::now();
         let task_id = task.id.clone();
-        let (result, should_publish) = self.build_result_for_task(&task, started_at);
 
-        if should_publish
-            && self.config.watcher.result_publish_enabled
+        // Step 1: Validate the task.
+        if let Err(e) = self.validate_task(&task) {
+            let (mut result, _) = self.build_result_for_task(&task, started_at);
+            result.errors.push(e.to_string());
+            return Ok(result);
+        }
+
+        // Step 2: Dry-run short-circuit.
+        if task.dry_run {
+            let (mut result, _) = self.build_result_for_task(&task, started_at);
+            result.diagnostics.push(Diagnostic::info(
+                DiagnosticCategory::Plugin,
+                format!("dry-run: plugin '{}' was not executed", task.plugin),
+            ));
+            result = result.success_result();
+            if self.config.watcher.result_publish_enabled
+                && let Err(pub_err) = publisher.publish(&result).await
+                && let Some(path) = failure_path
+            {
+                let mut failure_state = PublishFailureState::new(task_id.clone(), result.clone());
+                failure_state.record_failure(pub_err.to_string());
+                if let Err(persist_err) = failure_state.persist(path) {
+                    warn!(
+                        task_id = %task_id,
+                        error = %persist_err,
+                        "failed to persist publish failure state after publish error"
+                    );
+                }
+            }
+            return Ok(result);
+        }
+
+        // Step 3: Full execution via WorkflowExecutor.
+        let exec_input = ExecutionInput::WatcherTask(Box::new(task.clone()));
+        let result = match self.workflow_executor.execute(exec_input).await {
+            Ok(exec_result) => exec_result.watcher_result.unwrap_or_else(|| {
+                let (mut r, _) = self.build_result_for_task(&task, started_at);
+                r.errors
+                    .push("workflow executor returned no watcher result".to_string());
+                r
+            }),
+            Err(e) => {
+                let (mut r, _) = self.build_result_for_task(&task, started_at);
+                r.errors.push(e.to_string());
+                r
+            }
+        };
+
+        if self.config.watcher.result_publish_enabled
             && let Err(pub_err) = publisher.publish(&result).await
             && let Some(path) = failure_path
         {
@@ -327,13 +421,14 @@ impl WatcherExecutor {
     // Private helpers
     // ------------------------------------------------------------------
 
-    /// Builds a [`WatcherResultMessage`] for `task`, validating and running
-    /// the plugin stub.
+    /// Builds the base [`WatcherResultMessage`] structure for a task.
     ///
-    /// Returns the result and a boolean `should_publish` flag:
-    /// - `false` on validation failure (we do not publish failure results from
-    ///   invalid tasks in the base flow).
-    /// - `true` otherwise.
+    /// This helper creates the shell result message with all provenance fields
+    /// populated.  It is used by validation-failure and dry-run paths that do
+    /// not go through the full `WorkflowExecutor` pipeline.
+    ///
+    /// Returns `(WatcherResultMessage, bool)` where the bool indicates whether
+    /// the result should be published (`true`) or suppressed (`false`).
     fn build_result_for_task(
         &self,
         task: &WatcherTaskMessage,
@@ -350,7 +445,7 @@ impl WatcherExecutor {
             }
         };
 
-        // Stub workspace ID; real construction happens in Phase 17.
+        // Use a placeholder workspace ID; the real ID comes from WorkflowExecutor.
         let workspace_id = Ulid::new().to_string();
 
         let mut result = WatcherResultMessage::new(
@@ -365,33 +460,6 @@ impl WatcherExecutor {
             started_at,
         );
         result.target_branch = task.target_branch.clone();
-
-        // Step 1: Validate the task.
-        if let Err(e) = self.validate_task(task) {
-            result.errors.push(e.to_string());
-            return (result, false);
-        }
-
-        // Step 2: Dry-run short-circuit.
-        if task.dry_run {
-            result.diagnostics.push(Diagnostic::info(
-                DiagnosticCategory::Plugin,
-                format!("dry-run: plugin '{}' was not executed", task.plugin),
-            ));
-            result = result.success_result();
-            return (result, true);
-        }
-
-        // Step 3: Stub plugin execution (full wiring in Phase 17).
-        result.diagnostics.push(Diagnostic::info(
-            DiagnosticCategory::Plugin,
-            format!(
-                "plugin '{}' dispatched via watcher (full execution in Phase 17)",
-                task.plugin
-            ),
-        ));
-        result = result.success_result();
-
         (result, true)
     }
 }
@@ -518,6 +586,9 @@ mod tests {
     fn make_test_config(publish_enabled: bool) -> Arc<Config> {
         let mut config = Config::default();
         config.watcher.result_publish_enabled = publish_enabled;
+        config.reports.formats = vec!["json".to_string()];
+        config.governance.enabled = false;
+        config.governance.rules_path = String::new();
         Arc::new(config)
     }
 
@@ -537,7 +608,37 @@ mod tests {
             dry_run,
             workspace_directory: None,
             metadata: HashMap::new(),
-            requested_report_formats: vec!["markdown".to_string()],
+            requested_report_formats: vec!["json".to_string()],
+            correlation_id: "corr-001".to_string(),
+            reply_topic_override: None,
+        }
+    }
+
+    /// Makes a test task that uses a real local directory as the repository.
+    ///
+    /// Required for tests that exercise real plugin execution via `WorkflowExecutor`.
+    fn make_local_task(
+        plugin: &str,
+        repo_path: &str,
+        workspace_path: &str,
+        dry_run: bool,
+    ) -> WatcherTaskMessage {
+        WatcherTaskMessage {
+            id: "test-task-001".to_string(),
+            version: WATCHER_TASK_VERSION.to_string(),
+            spec_version: "1.0".to_string(),
+            event_type: WatcherEventType::TechnicalReviewTask,
+            source: "test-ci".to_string(),
+            repository: repo_path.to_string(),
+            target_branch: Some("main".to_string()),
+            provider: None,
+            model: None,
+            plugin: plugin.to_string(),
+            plugin_config: serde_json::json!({}),
+            dry_run,
+            workspace_directory: Some(workspace_path.to_string()),
+            metadata: HashMap::new(),
+            requested_report_formats: vec!["json".to_string()],
             correlation_id: "corr-001".to_string(),
             reply_topic_override: None,
         }
@@ -632,21 +733,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_watcher_executor_process_task_success_publishes_result() {
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let ws_dir = tempfile::TempDir::new().unwrap();
+
         let executor = WatcherExecutor::new(make_test_config(true), make_test_registry());
-        let task = make_test_task("technical_review", false);
+        let task = make_local_task(
+            "technical_review",
+            repo_dir.path().to_str().unwrap(),
+            ws_dir.path().to_str().unwrap(),
+            false,
+        );
         let publisher = MockResultPublisher::new();
 
         let result = executor.process_task(task, &*publisher).await.unwrap();
 
-        assert!(result.success);
+        assert!(result.success, "errors: {:?}", result.errors);
         let published = publisher.get_published().await;
         assert_eq!(published.len(), 1);
     }
 
     #[tokio::test]
     async fn test_watcher_executor_process_task_success_result_has_correct_correlation_id() {
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let ws_dir = tempfile::TempDir::new().unwrap();
+
         let executor = WatcherExecutor::new(make_test_config(false), make_test_registry());
-        let task = make_test_task("technical_review", false);
+        let task = make_local_task(
+            "technical_review",
+            repo_dir.path().to_str().unwrap(),
+            ws_dir.path().to_str().unwrap(),
+            false,
+        );
         let publisher = MockResultPublisher::new();
 
         let result = executor.process_task(task, &*publisher).await.unwrap();
@@ -657,8 +774,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_watcher_executor_process_task_publish_disabled_does_not_publish() {
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let ws_dir = tempfile::TempDir::new().unwrap();
+
         let executor = WatcherExecutor::new(make_test_config(false), make_test_registry());
-        let task = make_test_task("technical_review", false);
+        let task = make_local_task(
+            "technical_review",
+            repo_dir.path().to_str().unwrap(),
+            ws_dir.path().to_str().unwrap(),
+            false,
+        );
         let publisher = MockResultPublisher::new();
 
         executor.process_task(task, &*publisher).await.unwrap();
@@ -677,9 +802,15 @@ mod tests {
         // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
         let tmp = tempfile::TempDir::new().unwrap();
         let failure_path = tmp.path().join("failure.json");
+        let repo_dir = tempfile::TempDir::new().unwrap();
 
         let executor = WatcherExecutor::new(make_test_config(true), make_test_registry());
-        let task = make_test_task("technical_review", false);
+        let task = make_local_task(
+            "technical_review",
+            repo_dir.path().to_str().unwrap(),
+            tmp.path().to_str().unwrap(),
+            false,
+        );
         let publisher = MockResultPublisher::new_failing();
 
         let result = executor
@@ -688,15 +819,23 @@ mod tests {
             .unwrap();
 
         // Result returned successfully despite publish failure.
-        assert!(result.success);
+        assert!(result.success, "errors: {:?}", result.errors);
         // Failure state was persisted.
         assert!(failure_path.exists());
     }
 
     #[tokio::test]
     async fn test_watcher_executor_process_task_with_failure_tracking_succeeds_normally() {
+        let repo_dir = tempfile::TempDir::new().unwrap();
+        let ws_dir = tempfile::TempDir::new().unwrap();
+
         let executor = WatcherExecutor::new(make_test_config(true), make_test_registry());
-        let task = make_test_task("technical_review", false);
+        let task = make_local_task(
+            "technical_review",
+            repo_dir.path().to_str().unwrap(),
+            ws_dir.path().to_str().unwrap(),
+            false,
+        );
         let publisher = MockResultPublisher::new();
 
         let result = executor
@@ -704,7 +843,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.success);
+        assert!(result.success, "errors: {:?}", result.errors);
         let published = publisher.get_published().await;
         assert_eq!(published.len(), 1);
     }
