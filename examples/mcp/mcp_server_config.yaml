@@ -1,0 +1,42 @@
+# MCP (Model Context Protocol) server configuration examples.
+# Copy the relevant server definitions into the mcp.servers section
+# of your config.yaml.
+#
+# IMPORTANT: Tools must be listed in allowed_tools before plugins can use them.
+
+mcp:
+  timeout_seconds: 30
+  allowed_tools:
+    filesystem: []
+    git: []
+  servers:
+    - name: "filesystem"
+      command: "npx"
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/path/to/your/project"
+      env: {}
+      timeout_seconds: 30
+      transport: "stdio"
+      allowed_tools:
+        - "read_file"
+        - "list_directory"
+        - "get_file_info"
+      auth: null
+
+    - name: "git"
+      command: "npx"
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-git"
+        - "--repository"
+        - "/path/to/your/project"
+      env: {}
+      timeout_seconds: 30
+      transport: "stdio"
+      allowed_tools:
+        - "git_log"
+        - "git_diff"
+        - "git_status"
+      auth: null

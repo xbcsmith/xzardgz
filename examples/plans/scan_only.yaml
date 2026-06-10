@@ -1,0 +1,28 @@
+version: "1"
+name: "scan only"
+description: "Scan a repository and write a scan artifact without running any plugins. Use this plan to inspect what the scanner discovers before committing to a full review."
+
+repository:
+  path: "."
+  branch: "main"
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: true
+
+scan:
+  output: ".xzardgz/scan/scan.json"
+  ignore_patterns:
+    - "target"
+    - ".git"
+    - "node_modules"
+
+steps:
+  - id: "scan"
+    type: "scan"
+    description: "Scan repository structure and produce scan artifact"
+
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - "markdown"

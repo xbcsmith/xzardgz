@@ -1,0 +1,27 @@
+{
+  "id": "01HWZXAMPLE00000000000SR01",
+  "spec_version": "1",
+  "event_type": "xzardgz.security_review.task",
+  "source": "github-ci",
+  "repository": "https://github.com/example-org/example-repo.git",
+  "target_branch": "main",
+  "plugin": "security-review",
+  "plugin_config": {
+    "max_findings": 50,
+    "severity_threshold": "low",
+    "include_sarif": true
+  },
+  "provider": "openai",
+  "model": "gpt-4.1-mini",
+  "dry_run": false,
+  "metadata": {
+    "pr_number": "42",
+    "commit_sha": "abc123def456"
+  },
+  "requested_report_formats": [
+    "markdown",
+    "json",
+    "sarif"
+  ],
+  "correlation_id": "corr-sec-review-20240101-001"
+}

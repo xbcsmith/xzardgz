@@ -6,10 +6,26 @@
         "driver": {
           "name": "security-review",
           "version": "1.0.0",
-          "rules": []
+          "rules": [
+            {
+              "id": "secrets",
+              "shortDescription": {
+                "text": "secrets - HIGH security issue"
+              }
+            }
+          ]
         }
       },
-      "results": []
+      "results": [
+        {
+          "ruleId": "secrets",
+          "message": {
+            "text": "Full credential compromise\n\nRemediation: Move to environment variable"
+          },
+          "level": "error",
+          "locations": []
+        }
+      ]
     }
   ]
 }

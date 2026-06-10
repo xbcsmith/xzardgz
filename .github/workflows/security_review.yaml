@@ -1,0 +1,90 @@
+name: Security Review
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  security-events: write
+  contents: read
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install xzardgz
+        run: cargo install --path .
+
+      - name: Create security review config
+        run: |
+          cat > config.yaml << 'XZCONFIG'
+          provider:
+            default: "openai"
+            allow_fallback: false
+          openai:
+            api_key_env: "OPENAI_API_KEY"
+            model: "gpt-4.1-mini"
+            endpoint: "https://api.openai.com/v1"
+            allow_insecure_endpoint: false
+          scanner:
+            include_hidden: false
+            follow_symlinks: false
+            max_file_size_bytes: 1048576
+            ignore_patterns:
+              - "target"
+              - ".git"
+              - "node_modules"
+          plugins:
+            default: "security-review"
+            enabled:
+              - "security-review"
+          security_review:
+            max_findings: 25
+            severity_threshold: "medium"
+            include_sarif: true
+            report_formats:
+              - "markdown"
+              - "json"
+              - "sarif"
+          reports:
+            output_dir: "sarif-results"
+            formats:
+              - "markdown"
+              - "json"
+            overwrite: true
+            include_diagnostics: false
+          XZCONFIG
+
+      - name: Run security review
+        run: |
+          xzardgz run \
+            --repository . \
+            --plugin security-review \
+            --config config.yaml \
+            --output sarif-results
+
+      - name: Upload SARIF results to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: sarif-results/

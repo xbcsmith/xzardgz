@@ -24,6 +24,10 @@ Task-focused guides for specific goals.
   Anthropic, Ollama, or Copilot.
 - [Create Workflows](how-to/create_workflows.md) - Build plugin-first workflow
   plans.
+- [Setup Watcher Mode](how-to/setup_watcher.md) - Configure and run Kafka-backed
+  watcher mode.
+- [Deploy](how-to/deploy.md) - Binary build, container, GitHub Actions, and
+  Kubernetes deployment.
 - [Integrate a Downstream Service](how-to/integrate_downstream_service.md) -
   Consume and report work lifecycle events.
 
@@ -31,19 +35,42 @@ Task-focused guides for specific goals.
 
 Background, architecture, and design notes.
 
-- [Architecture](explanation/architecture.md) - Workflow harness architecture.
-- [Workflow Harness Refactor Plan](explanation/workflow_harness_refactor_implementation_plan.md)
-  - First-release implementation plan.
-- [Downstream Consumer Implementation](explanation/downstream_consumer_implementation.md)
-  - Kafka consumer implementation summary.
+- [Architecture](explanation/architecture.md) - Workflow harness architecture
+  and component overview.
+- [Workflow Harness Refactor Plan](explanation/workflow_harness_refactor_implementation_plan.md) -
+  First-release implementation plan.
+- [Downstream Consumer Implementation](explanation/downstream_consumer_implementation.md) -
+  Kafka consumer implementation summary.
 
 ### Reference
 
 Technical specifications and command details.
 
-- [CLI Commands](reference/cli.md) - Command surface reference.
+- [CLI Commands](reference/cli.md) - Full command surface reference.
 - [Configuration](reference/configuration.md) - Configuration model reference.
 - [Workflow Format](reference/workflow_format.md) - Plan file specification.
+- [Authentication](reference/authentication.md) - Provider authentication and
+  credential management.
+- [Watcher Mode](reference/watcher_mode.md) - Watcher configuration, matcher
+  rules, and operational guidance.
+- [Kafka Schemas](reference/kafka_schemas.md) - Task and result message JSON
+  schemas and examples.
+- [Technical Review Plugin](reference/technical_review_plugin.md) - Technical
+  review plugin configuration and dimensions.
+- [Security Review Plugin](reference/security_review_plugin.md) - Security
+  review plugin, SARIF output, and CI integration.
+- [Workspace Model](reference/workspace_model.md) - Workspace state, directory
+  layout, and resume behavior.
+- [Scanner Artifacts](reference/scanner_artifacts.md) - Scan artifact schema,
+  ignore rules, and scanner configuration.
+- [Governance](reference/governance.md) - Governance checks, violation handling,
+  and configuration.
+- [Plugin Development](reference/plugin_development.md) - WorkflowPlugin trait,
+  PluginContext, PluginOutput, and registration.
+- [Prompt Customization](reference/prompt_customization.md) - Prompt resolution
+  order, template format, and override guide.
+- [MCP Configuration](reference/mcp_configuration.md) - MCP server definitions,
+  tool allow-listing, and CLI commands.
 - [Downstream Consumer API](reference/downstream_consumer_api.md) - Consumer
   environment variables and lifecycle events.
 
@@ -53,20 +80,55 @@ Technical specifications and command details.
 
 - [Quickstart Tutorial](tutorials/quickstart.md)
 - [Configure Providers](how-to/configure_providers.md)
+- [Authentication Reference](reference/authentication.md)
 
 ### Workflow Automation
 
 - [Create Workflows](how-to/create_workflows.md)
 - [Workflow Format Reference](reference/workflow_format.md)
+- [Technical Review Plugin](reference/technical_review_plugin.md)
+- [Security Review Plugin](reference/security_review_plugin.md)
 
 ### Command Surface
 
 - [CLI Commands](reference/cli.md)
 - [Configuration Options](reference/configuration.md)
 
+### Watcher and Kafka Integration
+
+- [Setup Watcher Mode](how-to/setup_watcher.md)
+- [Watcher Mode Reference](reference/watcher_mode.md)
+- [Kafka Schemas](reference/kafka_schemas.md)
+
+### Deployment
+
+- [Deploy](how-to/deploy.md)
+- [GitHub Actions example](.github/workflows/security_review.yaml)
+- [Dockerfile](../Dockerfile)
+
+### Plugin and Prompt Development
+
+- [Plugin Development Reference](reference/plugin_development.md)
+- [Prompt Customization Reference](reference/prompt_customization.md)
+
 ### System Architecture
 
 - [Architecture Overview](explanation/architecture.md)
+- [Scanner Artifacts](reference/scanner_artifacts.md)
+- [Workspace Model](reference/workspace_model.md)
+- [Governance](reference/governance.md)
+- [MCP Configuration](reference/mcp_configuration.md)
+
+## Examples
+
+Example plan files, watcher task messages, and configuration snippets are in the
+[`examples/`](../examples/) directory:
+
+- [`examples/plans/`](../examples/plans/) - Workflow plan files
+- [`examples/watcher/`](../examples/watcher/) - Watcher task message examples
+- [`examples/kafka/`](../examples/kafka/) - Kafka configuration
+- [`examples/mcp/`](../examples/mcp/) - MCP server configuration
+- [`examples/prompts/`](../examples/prompts/) - Prompt override examples
 
 ## Finding What You Need
 

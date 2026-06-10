@@ -1,0 +1,22 @@
+{
+  "id": "01JTEST00000000000000TECH1",
+  "spec_version": "1",
+  "event_type": "xzardgz.technical_review.task",
+  "source": "xzardgz/examples",
+  "repository": "https://github.com/example/my-repo",
+  "target_branch": "main",
+  "plugin": "technical-review",
+  "plugin_config": {
+    "max_findings": 20,
+    "severity_threshold": "medium",
+    "focus_areas": ["architecture", "reliability"]
+  },
+  "provider": null,
+  "model": null,
+  "dry_run": false,
+  "workspace_directory": null,
+  "metadata": {},
+  "requested_report_formats": ["markdown", "json"],
+  "correlation_id": null,
+  "reply_topic_override": null
+}

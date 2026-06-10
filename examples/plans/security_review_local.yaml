@@ -1,6 +1,6 @@
 version: "1"
-name: "simple security review"
-description: "Scan a repository and run the security review plugin"
+name: "local security review"
+description: "Run a thorough security review against a local repository checkout. Produces SARIF output suitable for upload to GitHub Advanced Security or other SARIF-compatible tooling."
 
 repository:
   path: "."
@@ -15,7 +15,7 @@ provider:
   model: "gpt-4.1-mini"
 
 scan:
-  output: ".xzardgz/scan/security_scan.json"
+  output: ".xzardgz/scan/security_review_local_scan.json"
   ignore_patterns:
     - "target"
     - ".git"
@@ -28,13 +28,13 @@ steps:
 
   - id: "security_review"
     type: "plugin"
-    description: "Run the security review plugin with SARIF output"
+    description: "Run the security review plugin with low severity threshold and SARIF output"
     plugin: "security-review"
     depends_on:
       - "scan"
     config:
-      max_findings: 25
-      severity_threshold: "medium"
+      max_findings: 50
+      severity_threshold: "low"
       include_sarif: true
 
 reports:

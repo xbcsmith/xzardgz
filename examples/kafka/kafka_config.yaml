@@ -1,0 +1,46 @@
+# Kafka configuration for XZardgz watcher mode.
+# Copy relevant sections into your config.yaml.
+
+# Development: plaintext brokers (no authentication)
+kafka:
+  brokers:
+    - "localhost:9092"
+  group_id: "xzardgz-workflow-harness"
+  security_protocol: "PLAINTEXT"
+  sasl_mechanism: null
+  sasl_username_env: null
+  sasl_password_env: null
+  ssl_ca_location: null
+
+# Production with SASL/SSL (uncomment and configure):
+# kafka:
+#   brokers:
+#     - "kafka-broker-1.internal:9093"
+#     - "kafka-broker-2.internal:9093"
+#   group_id: "xzardgz-workflow-harness"
+#   security_protocol: "SASL_SSL"
+#   sasl_mechanism: "PLAIN"
+#   sasl_username_env: "KAFKA_SASL_USERNAME"
+#   sasl_password_env: "KAFKA_SASL_PASSWORD"
+#   ssl_ca_location: "/etc/ssl/certs/ca-bundle.crt"
+
+topics:
+  task: "xzardgz.tasks"
+  result: "xzardgz.results"
+
+matcher:
+  event_types:
+    - "xzardgz.technical_review.task"
+    - "xzardgz.security_review.task"
+  repositories: []
+  plugins:
+    - "technical-review"
+    - "security-review"
+  platforms: []
+  metadata: {}
+
+watcher:
+  enabled: true
+  max_concurrent_tasks: 2
+  result_publish_enabled: true
+  once: false

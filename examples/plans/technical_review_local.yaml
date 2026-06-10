@@ -1,6 +1,6 @@
 version: "1"
-name: "repository technical review"
-description: "Scan a repository and run the technical review plugin"
+name: "local technical review"
+description: "Run a comprehensive technical review against a local repository checkout. Suitable for developer workstations and local CI environments where the repository is already present on disk."
 
 repository:
   path: "."
@@ -15,7 +15,7 @@ provider:
   model: "gpt-4.1-mini"
 
 scan:
-  output: ".xzardgz/scan/analyze_repo_scan.json"
+  output: ".xzardgz/scan/technical_review_local_scan.json"
   ignore_patterns:
     - "target"
     - ".git"
@@ -28,17 +28,19 @@ steps:
 
   - id: "technical_review"
     type: "plugin"
-    description: "Run the technical review plugin"
+    description: "Run the technical review plugin with full focus area coverage"
     plugin: "technical-review"
     depends_on:
       - "scan"
     config:
-      max_findings: 25
-      severity_threshold: "medium"
+      max_findings: 20
+      severity_threshold: "low"
       focus_areas:
         - "architecture"
         - "reliability"
         - "maintainability"
+        - "performance"
+        - "testability"
 
 reports:
   output_dir: ".xzardgz/reports"
