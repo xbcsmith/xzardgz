@@ -1,12 +1,10 @@
 # Security Review Report
 
-Generated at: 2026-06-10T18:35:23Z
+Generated at: 2026-06-10T19:11:44Z
 
-Repository: test-repo (https://github.com/org/test-repo)
+Repository: repo
 
-Workspace: 01KTSD2MV8X81MAPN7EGPME0DN
-
-Risk band: HIGH
+Workspace: 01KTSF56BB64Y0YGDA3WNF4SKW
 
 ## Summary
 
@@ -14,21 +12,9 @@ Primary language: Rust
 
 Frameworks: None detected
 
-Total findings: 1
-
-Findings by severity:
-
-- HIGH: 1
+Total findings: 0
 
 ## Findings by Category
 
-### secrets
-
-| Severity | CWE | OWASP | File | Symbol | Evidence | Impact | Remediation |
-|----------|-----|-------|------|--------|----------|--------|-------------|
-| HIGH |  |  |  |  | API key found in source | Full credential compromise | Move to environment variable |
-
-## Confidence
-
-Average confidence: 0.90
+*No findings recorded.*
 

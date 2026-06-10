@@ -20,10 +20,21 @@
         {
           "ruleId": "secrets",
           "message": {
-            "text": "Full credential compromise\n\nRemediation: Move to environment variable"
+            "text": "data exposure [CWE-798] [A07:2021]\n\nRemediation: use env vars"
           },
           "level": "error",
-          "locations": []
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main.rs"
+                },
+                "region": {
+                  "startLine": 10
+                }
+              }
+            }
+          ]
         }
       ]
     }

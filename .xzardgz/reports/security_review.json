@@ -1,32 +1,19 @@
 {
   "version": "1",
-  "report_id": "01KTSD2MV9ZVWJWG9YTQZNN6Y5",
-  "generated_at": "2026-06-10T18:35:23.369694Z",
+  "report_id": "01KTSF56EDN2T73DQ0MKK0Y657",
+  "generated_at": "2026-06-10T19:11:44.077844Z",
   "plugin_name": "security-review",
-  "repository_name": "test-repo",
-  "repository_url": "https://github.com/org/test-repo",
+  "repository_name": "repo",
+  "repository_url": null,
   "head_commit": null,
-  "workspace_id": "01KTSD2MV8X81MAPN7EGPME0DN",
+  "workspace_id": "01KTSF56BB64Y0YGDA3WNF4SKW",
   "scan_artifact_version": null,
   "provider_metadata": null,
   "model_id": null,
   "findings": {
-    "findings": [
-      {
-        "kind": "secrets",
-        "title": "HIGH: Full credential compromise",
-        "description": "API key found in source\n\nExploitability: Trivial - key is directly usable\n\nImpact: Full credential compromise\n\nRemediation: Move to environment variable",
-        "file_path": null,
-        "line": null,
-        "severity": "High",
-        "confidence": 0.9,
-        "tags": [
-          "secrets"
-        ]
-      }
-    ]
+    "findings": []
   },
   "diagnostics": [],
-  "risk_band": "High",
+  "risk_band": null,
   "scores": {}
 }
