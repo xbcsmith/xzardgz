@@ -6,6 +6,8 @@
 //! - Local plan execution (`ExecutionInput::LocalPlan`)
 //! - Watcher task execution (`ExecutionInput::WatcherTask`)
 //! - Scan-only execution (`ExecutionInput::ScanOnly`)
+//! - Plugin-only execution against previously-collected scan data
+//!   (`ExecutionInput::PluginOnly`)
 //! - Dry-run mode (validates without side effects)
 //! - Resume from existing workspace state
 //!
@@ -63,7 +65,9 @@ use crate::tools::sandbox::PathValidator;
 use crate::watcher::event_type::WatcherEventType;
 use crate::watcher::result::WatcherResultMessage;
 use crate::watcher::task::WatcherTaskMessage;
-use crate::workflow::plan::{PLAN_VERSION, PlanScanOptions, PluginStep, WorkflowPlan};
+use crate::workflow::plan::{
+    PLAN_VERSION, PlanReportOptions, PlanScanOptions, PluginStep, WorkflowPlan,
+};
 use crate::workspace::WorkspaceManager;
 use crate::workspace::stage::WorkspaceStage;
 
@@ -73,7 +77,7 @@ use crate::workspace::stage::WorkspaceStage;
 
 /// Input descriptor for a workflow execution run.
 ///
-/// Three modes are supported:
+/// Four modes are supported:
 ///
 /// - [`LocalPlan`][ExecutionInput::LocalPlan] — a full workflow plan
 ///   constructed from a file or programmatically.
@@ -81,6 +85,9 @@ use crate::workspace::stage::WorkspaceStage;
 ///   watcher task message.
 /// - [`ScanOnly`][ExecutionInput::ScanOnly] — runs only the repository
 ///   scanner without invoking any plugin.
+/// - [`PluginOnly`][ExecutionInput::PluginOnly] — runs a single plugin
+///   against previously-collected scan data, without resolving a
+///   repository or running the scanner.
 ///
 /// # Examples
 ///
@@ -106,6 +113,60 @@ pub enum ExecutionInput {
         ///
         /// When `None`, the artifact is written only to the workspace.
         output_path: Option<String>,
+        /// Target branch to scan. `None` uses the repository default branch.
+        branch: Option<String>,
+        /// When `true`, resumes from an existing workspace for `repository`
+        /// (loading its recorded scan artifact when present) instead of
+        /// always creating a fresh workspace.
+        resume: bool,
+        /// Workspace root override. Falls back to the global configuration's
+        /// workspace root when `None`.
+        workspace: Option<String>,
+    },
+    /// Runs a single plugin against previously-collected scan data.
+    ///
+    /// Skips repository resolution, git metadata collection, and repository
+    /// scanning entirely. Scan data is loaded either from an existing
+    /// workspace's recorded scan artifact (`workspace_dir`) or from an
+    /// externally-supplied scan-artifact YAML file (`scan_artifact_path`).
+    /// Backs the `plugin run --workspace <dir>` / `plugin run
+    /// --scan-artifact <path>` CLI shape, which bypasses the full `run`
+    /// pipeline. Exactly one of `workspace_dir` or `scan_artifact_path` must
+    /// be `Some`; supplying neither is a [`PipelineError::Workflow`].
+    PluginOnly {
+        /// Name of the plugin to execute.
+        plugin: String,
+        /// Path to an existing workspace directory
+        /// (`{workspace_root}/{workspace_id}`) to resume scan data, state,
+        /// and sandbox roots from.
+        workspace_dir: Option<String>,
+        /// Path to an external scan-artifact YAML file to load scan data
+        /// from directly, independent of any workspace.
+        ///
+        /// When `workspace_dir` is also supplied, this path takes
+        /// precedence over the workspace's own recorded artifact. When
+        /// `workspace_dir` is absent, a fresh, ephemeral workspace is
+        /// created under `workspace_root` purely to host reports and
+        /// sandbox state; the plugin has no read access to the original
+        /// repository checkout in this mode, since its location is not
+        /// recorded anywhere.
+        scan_artifact_path: Option<String>,
+        /// Base directory under which a fresh workspace is created when
+        /// `workspace_dir` is not supplied. Falls back to the global
+        /// configuration's workspace root when `None`.
+        workspace_root: Option<String>,
+        /// Plugin-specific configuration as a JSON value.
+        config: Option<serde_json::Value>,
+        /// Provider override (`openai`, `anthropic`, `ollama`, `copilot`).
+        provider: Option<String>,
+        /// Model identifier override.
+        model: Option<String>,
+        /// Performs a dry run: validates inputs without invoking any
+        /// provider or writing reports.
+        dry_run: bool,
+        /// Requested report output formats. Empty means use the
+        /// workspace/plugin default.
+        report_formats: Vec<String>,
     },
 }
 
@@ -135,6 +196,7 @@ pub enum ExecutionInput {
 /// }
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct ExecutionResult {
     /// Unique workspace identifier (ULID) created or resumed for this run.
     pub workspace_id: String,
@@ -235,6 +297,7 @@ impl WorkflowExecutor {
     /// | `LocalPlan` | Full pipeline: scan, plugin steps, reports |
     /// | `WatcherTask` | Converts task to plan, runs pipeline, builds result |
     /// | `ScanOnly` | Scan only, no plugin execution |
+    /// | `PluginOnly` | Plugin only, against previously-collected scan data |
     ///
     /// # Arguments
     ///
@@ -267,6 +330,9 @@ impl WorkflowExecutor {
     /// let input = ExecutionInput::ScanOnly {
     ///     repository: ".".to_string(),
     ///     output_path: None,
+    ///     branch: None,
+    ///     resume: false,
+    ///     workspace: None,
     /// };
     /// let result = executor.execute(input).await?;
     /// assert!(result.scan_artifact_path.is_some());
@@ -280,9 +346,42 @@ impl WorkflowExecutor {
             ExecutionInput::ScanOnly {
                 repository,
                 output_path,
+                branch,
+                resume,
+                workspace,
             } => {
-                self.run_scan_only(&repository, output_path.as_deref())
-                    .await
+                self.run_scan_only(
+                    &repository,
+                    output_path.as_deref(),
+                    branch.as_deref(),
+                    resume,
+                    workspace.as_deref(),
+                )
+                .await
+            }
+            ExecutionInput::PluginOnly {
+                plugin,
+                workspace_dir,
+                scan_artifact_path,
+                workspace_root,
+                config,
+                provider,
+                model,
+                dry_run,
+                report_formats,
+            } => {
+                self.run_plugin_only(
+                    &plugin,
+                    workspace_dir.as_deref(),
+                    scan_artifact_path.as_deref(),
+                    workspace_root.as_deref(),
+                    config,
+                    provider,
+                    model,
+                    dry_run,
+                    report_formats,
+                )
+                .await
             }
         }
     }
@@ -624,21 +723,60 @@ impl WorkflowExecutor {
     }
 
     /// Runs only the scanner stage without plugin execution.
+    ///
+    /// Mirrors [`run_plan`][Self::run_plan]'s workspace and governance
+    /// handling: `resume` selects [`WorkspaceManager::open`] over
+    /// [`WorkspaceManager::create`], and governance rules are validated
+    /// before any workspace or filesystem I/O occurs.
     async fn run_scan_only(
         &self,
         repository: &str,
         output_path: Option<&str>,
+        branch: Option<&str>,
+        resume: bool,
+        workspace_override: Option<&str>,
     ) -> Result<ExecutionResult> {
         let started_at = Utc::now();
-        let workspace_root = self.config.workspace.root.clone();
 
-        let mut workspace = WorkspaceManager::create(&workspace_root, repository, None, None)?;
+        // Governance: validate repository/branch inputs. No plugin steps run
+        // in scan-only mode, so `plugin_names` is empty.
+        let governance = GovernanceChecker::from_config(&self.config.governance)?;
+        governance.check_workflow_inputs(branch, &[repository], &[], &[], &[])?;
+
+        let workspace_root = workspace_override
+            .map(str::to_string)
+            .unwrap_or_else(|| self.config.workspace.root.clone());
+        governance.check_workspace_path(&workspace_root)?;
+
+        let mut workspace = if resume {
+            WorkspaceManager::open(&workspace_root, repository, branch.map(str::to_string))?
+        } else {
+            WorkspaceManager::create(
+                &workspace_root,
+                repository,
+                branch.map(str::to_string),
+                None,
+            )?
+        };
         let workspace_id = workspace.id().to_string();
 
         workspace.transition(WorkspaceStage::Scanning)?;
 
         let repo_path = self.resolve_repository_path(repository)?;
-        let scan_result = self.run_scanner(&repo_path, &self.config, None, None)?;
+        let scan_result = if resume && workspace.state.scan_artifact_path.is_some() {
+            match self.load_scan_artifact(&workspace) {
+                Ok(sr) => sr,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "failed to load scan artifact; falling back to fresh scan"
+                    );
+                    self.run_scanner(&repo_path, &self.config, None, None)?
+                }
+            }
+        } else {
+            self.run_scanner(&repo_path, &self.config, None, None)?
+        };
 
         // Persist scan artifact to workspace.
         let artifact_path = workspace
@@ -673,6 +811,253 @@ impl WorkflowExecutor {
             report_paths: HashMap::new(),
             watcher_result: None,
             stage_at_completion: WorkspaceStage::Complete,
+            started_at,
+            completed_at,
+            is_dry_run: false,
+        })
+    }
+
+    /// Runs a single plugin against previously-collected scan data, without
+    /// resolving a repository or running the scanner.
+    ///
+    /// Exactly one of `workspace_dir` or `scan_artifact_path` must be
+    /// supplied. When `workspace_dir` is given, scan data and sandbox read
+    /// access to the original repository checkout (when its location was
+    /// recorded on the resumed workspace) are restored from it. When only
+    /// `scan_artifact_path` is given, a fresh, ephemeral workspace is
+    /// created under `workspace_root` purely to host reports and sandbox
+    /// state; the plugin has no read access to the original repository
+    /// checkout in that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Workflow`] if neither `workspace_dir` nor
+    /// `scan_artifact_path` is supplied, if `workspace_dir` does not have
+    /// both a parent (workspace root) and a file-name (workspace id)
+    /// component, or if the requested plugin is not registered. Returns
+    /// [`PipelineError::Plugin`] if the plugin itself returns an error.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_plugin_only(
+        &self,
+        plugin_name: &str,
+        workspace_dir: Option<&str>,
+        scan_artifact_path: Option<&str>,
+        workspace_root_override: Option<&str>,
+        plugin_config: Option<serde_json::Value>,
+        provider_override: Option<String>,
+        model_override: Option<String>,
+        dry_run: bool,
+        report_formats: Vec<String>,
+    ) -> Result<ExecutionResult> {
+        let started_at = Utc::now();
+
+        if workspace_dir.is_none() && scan_artifact_path.is_none() {
+            return Err(PipelineError::Workflow(
+                "plugin-only execution requires workspace_dir or scan_artifact_path".to_string(),
+            ));
+        }
+
+        // Build a synthetic single-step plan so plan-shaped helpers (report
+        // format resolution, dry-run validation, report writing) can be
+        // reused unchanged.
+        let mut plan = WorkflowPlan::direct_plugin_invocation(
+            plugin_name,
+            workspace_dir.or(scan_artifact_path).unwrap_or_default(),
+        );
+        plan.provider = provider_override;
+        plan.model = model_override;
+        plan.dry_run = dry_run;
+        plan.steps[0].config = plugin_config;
+        if !report_formats.is_empty() {
+            plan.steps[0].report_formats = Some(report_formats.clone());
+            plan.reports = Some(PlanReportOptions {
+                output_dir: None,
+                formats: Some(report_formats),
+                overwrite: None,
+            });
+        }
+
+        let effective_config = self.apply_plan_overrides(&plan);
+
+        // Governance: validate the plugin name. No file paths, branch, or
+        // provider endpoints are known in this mode.
+        let governance = GovernanceChecker::from_config(&effective_config.governance)?;
+        governance.check_workflow_inputs(None, &[], &[plugin_name], &[], &[])?;
+
+        // Resolve workspace, scan data, and (when available) the original
+        // repository checkout path for sandbox read access.
+        let (mut workspace, scan_result, repo_path, workspace_root) = if let Some(dir) =
+            workspace_dir
+        {
+            let path = std::path::Path::new(dir);
+            let root = path.parent().ok_or_else(|| {
+                PipelineError::Workflow(format!(
+                    "workspace directory '{}' has no parent (workspace root)",
+                    dir
+                ))
+            })?;
+            let id = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+                PipelineError::Workflow(format!(
+                    "workspace directory '{}' has no valid workspace id component",
+                    dir
+                ))
+            })?;
+            let root_str = root.to_string_lossy().to_string();
+            governance.check_workspace_path(&root_str)?;
+            let workspace = WorkspaceManager::load(&root_str, id)?;
+
+            let scan_result = if let Some(artifact_path) = scan_artifact_path {
+                let content = std::fs::read_to_string(artifact_path).map_err(PipelineError::Io)?;
+                ScanResult::load_from_str(&content)?
+            } else {
+                self.load_scan_artifact(&workspace)?
+            };
+
+            let repo_path = workspace
+                .state
+                .local_repository_path
+                .as_ref()
+                .map(PathBuf::from);
+
+            (workspace, scan_result, repo_path, root_str)
+        } else {
+            // `scan_artifact_path` is `Some` by the guard above.
+            let artifact_path = scan_artifact_path.expect("checked above");
+            let workspace_root = workspace_root_override
+                .map(str::to_string)
+                .unwrap_or_else(|| effective_config.workspace.root.clone());
+            governance.check_workspace_path(&workspace_root)?;
+            let workspace = WorkspaceManager::create(
+                &workspace_root,
+                &format!("scan-artifact:{}", artifact_path),
+                None,
+                None,
+            )?;
+            let content = std::fs::read_to_string(artifact_path).map_err(PipelineError::Io)?;
+            let scan_result = ScanResult::load_from_str(&content)?;
+            (workspace, scan_result, None, workspace_root)
+        };
+
+        let workspace_id = workspace.id().to_string();
+
+        // Dry-run short-circuit.
+        if plan.is_dry_run() {
+            return self.execute_dry_run(&plan, &workspace, &effective_config, started_at);
+        }
+
+        let step = plan.steps[0].clone();
+
+        workspace.transition(WorkspaceStage::PluginRunning {
+            step_id: step.id.clone(),
+        })?;
+
+        let plugin = self.plugin_registry.get(plugin_name)?;
+
+        let sandbox_read_roots = match &repo_path {
+            Some(p) => vec![p.clone(), workspace.paths.root.clone()],
+            None => vec![workspace.paths.root.clone()],
+        };
+        let sandbox = Arc::new(PathValidator::new(
+            sandbox_read_roots,
+            vec![workspace.paths.root.clone()],
+        ));
+
+        let tool_registry = match plugin.required_tool_access() {
+            ToolAccessLevel::None => ToolRegistry::new(),
+            ToolAccessLevel::ReadOnly => build_read_only_registry(sandbox),
+            ToolAccessLevel::ReadWrite => build_read_write_registry(sandbox),
+        };
+
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> =
+            ProviderFactory::create_from_config(&effective_config)?;
+
+        let plugin_workspace = Arc::new(WorkspaceManager::load(&workspace_root, &workspace_id)?);
+        let current_state = plugin_workspace.state.clone();
+
+        let ctx = PluginContext::new(
+            Arc::new(effective_config.clone()),
+            plugin_workspace,
+            current_state,
+            scan_result,
+            Arc::clone(&provider),
+            tool_registry,
+            GovernanceChecker::from_config(&effective_config.governance)?,
+        );
+
+        let plugin_output = match plugin.run(ctx).await {
+            Ok(output) => output,
+            Err(e) => {
+                let msg = format!("plugin '{}' execution failed: {}", plugin_name, e);
+                workspace.record_plugin_output(
+                    &step.id,
+                    plugin_name,
+                    None,
+                    false,
+                    vec![e.to_string()],
+                )?;
+                workspace.transition(WorkspaceStage::Failed {
+                    stage: format!("plugin_running:{}", step.id),
+                    reason: e.to_string(),
+                })?;
+                return Err(PipelineError::Plugin(msg));
+            }
+        };
+
+        // Reload workspace to pick up any writes the plugin made.
+        if let Ok(refreshed) = WorkspaceManager::load(&workspace_root, &workspace_id) {
+            workspace = refreshed;
+        }
+
+        let diag_strings: Vec<String> = plugin_output
+            .diagnostics
+            .entries
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        let first_written = plugin_output.written_files.first().cloned();
+        workspace.record_plugin_output(
+            &step.id,
+            plugin_name,
+            first_written,
+            plugin_output.completed,
+            diag_strings,
+        )?;
+
+        if let Some(score) = plugin_output
+            .scores
+            .get("overall")
+            .or_else(|| plugin_output.scores.values().next())
+            .copied()
+        {
+            workspace.record_plugin_score(&step.id, score)?;
+        }
+
+        workspace.transition(WorkspaceStage::ReportWriting)?;
+        let report_paths = self.write_step_reports(&step, &plugin_output, &plan, &workspace)?;
+        for path in &report_paths {
+            workspace.add_report_path(&step.id, path.clone())?;
+        }
+        let mut all_report_paths: HashMap<String, Vec<String>> = HashMap::new();
+        all_report_paths.insert(step.id.clone(), report_paths);
+
+        workspace.transition(WorkspaceStage::ReportComplete)?;
+        workspace.transition(WorkspaceStage::PluginComplete {
+            step_id: step.id.clone(),
+        })?;
+        workspace.transition(WorkspaceStage::Complete)?;
+
+        let completed_at = Utc::now();
+        let final_state = workspace.state.clone();
+
+        Ok(ExecutionResult {
+            workspace_id,
+            success: true,
+            errors: Vec::new(),
+            diagnostics: Vec::new(),
+            scan_artifact_path: final_state.scan_artifact_path,
+            report_paths: all_report_paths,
+            watcher_result: None,
+            stage_at_completion: final_state.current_stage,
             started_at,
             completed_at,
             is_dry_run: false,
@@ -1235,6 +1620,9 @@ mod tests {
             .execute(ExecutionInput::ScanOnly {
                 repository: repo_dir.path().to_str().unwrap().to_string(),
                 output_path: None,
+                branch: None,
+                resume: false,
+                workspace: None,
             })
             .await
             .expect("scan-only must succeed");
@@ -1261,6 +1649,9 @@ mod tests {
             .execute(ExecutionInput::ScanOnly {
                 repository: repo_dir.path().to_str().unwrap().to_string(),
                 output_path: Some(out_file.to_string_lossy().to_string()),
+                branch: None,
+                resume: false,
+                workspace: None,
             })
             .await
             .expect("scan-only with output path must succeed");
@@ -1270,6 +1661,267 @@ mod tests {
             out_file.exists(),
             "output_path artifact must have been written"
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_scan_only_resume_loads_existing_scan_artifact() {
+        let repo_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        let config = make_test_config(ws_dir.path().to_str().unwrap());
+        let executor = WorkflowExecutor::new(Arc::new(config), Arc::new(PluginRegistry::new()));
+
+        let repository = repo_dir.path().to_str().unwrap().to_string();
+        let workspace = Some(ws_dir.path().to_str().unwrap().to_string());
+
+        // First run: creates workspace and scan artifact.
+        let first = executor
+            .execute(ExecutionInput::ScanOnly {
+                repository: repository.clone(),
+                output_path: None,
+                branch: None,
+                resume: false,
+                workspace: workspace.clone(),
+            })
+            .await
+            .expect("first scan-only run must succeed");
+        assert!(first.scan_artifact_path.is_some());
+
+        // Second run: resume = true, should open the existing workspace and
+        // load its recorded scan artifact instead of failing.
+        let second = executor
+            .execute(ExecutionInput::ScanOnly {
+                repository,
+                output_path: None,
+                branch: None,
+                resume: true,
+                workspace,
+            })
+            .await
+            .expect("resumed scan-only run must succeed");
+
+        assert!(second.success);
+        assert!(second.scan_artifact_path.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_scan_only_rejects_invalid_workspace_path_under_governance() {
+        let repo_dir = TempDir::new().unwrap();
+
+        let mut config = Config::default();
+        config.governance.enabled = true;
+        config.governance.rules_path = String::new();
+        let executor = WorkflowExecutor::new(Arc::new(config), Arc::new(PluginRegistry::new()));
+
+        let result = executor
+            .execute(ExecutionInput::ScanOnly {
+                repository: repo_dir.path().to_str().unwrap().to_string(),
+                output_path: None,
+                branch: None,
+                resume: false,
+                workspace: Some("../escaping/workspace".to_string()),
+            })
+            .await;
+
+        assert!(
+            result.is_err(),
+            "expected governance to reject a path-traversal workspace override"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ExecutionInput::PluginOnly
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_plugin_only_rejects_when_neither_source_given() {
+        let ws_dir = TempDir::new().unwrap();
+        let executor = make_executor_with_success_plugin(ws_dir.path().to_str().unwrap());
+
+        let result = executor
+            .execute(ExecutionInput::PluginOnly {
+                plugin: "test-plugin".to_string(),
+                workspace_dir: None,
+                scan_artifact_path: None,
+                workspace_root: None,
+                config: None,
+                provider: None,
+                model: None,
+                dry_run: false,
+                report_formats: vec![],
+            })
+            .await;
+
+        assert!(
+            result.is_err(),
+            "expected error when neither workspace_dir nor scan_artifact_path is given"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("requires workspace_dir or scan_artifact_path"),
+            "expected missing-source error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_plugin_only_from_scan_artifact_path_returns_success() {
+        let repo_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+        let plugin_ws_dir = TempDir::new().unwrap();
+
+        let executor = make_executor_with_success_plugin(ws_dir.path().to_str().unwrap());
+
+        // Produce a real scan artifact via a scan-only run first.
+        let scan_result = executor
+            .execute(ExecutionInput::ScanOnly {
+                repository: repo_dir.path().to_str().unwrap().to_string(),
+                output_path: None,
+                branch: None,
+                resume: false,
+                workspace: Some(ws_dir.path().to_str().unwrap().to_string()),
+            })
+            .await
+            .expect("scan-only must succeed");
+        let artifact_path = scan_result
+            .scan_artifact_path
+            .expect("scan-only must produce an artifact path");
+
+        let result = executor
+            .execute(ExecutionInput::PluginOnly {
+                plugin: "test-plugin".to_string(),
+                workspace_dir: None,
+                scan_artifact_path: Some(artifact_path),
+                workspace_root: Some(plugin_ws_dir.path().to_str().unwrap().to_string()),
+                config: None,
+                provider: None,
+                model: None,
+                dry_run: false,
+                report_formats: vec!["json".to_string()],
+            })
+            .await
+            .expect("plugin-only run from scan artifact must succeed");
+
+        assert!(
+            result.success,
+            "expected success; errors: {:?}",
+            result.errors
+        );
+        assert!(!result.report_paths.is_empty());
+        assert!(!result.is_dry_run);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plugin_only_from_workspace_dir_returns_success() {
+        let repo_dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+
+        let executor = make_executor_with_success_plugin(ws_dir.path().to_str().unwrap());
+
+        // First, a LocalPlan run creates a workspace with a recorded scan
+        // artifact that PluginOnly can resume from.
+        let plan = make_test_plan(
+            repo_dir.path().to_str().unwrap(),
+            ws_dir.path().to_str().unwrap(),
+        );
+        let first = executor
+            .execute(ExecutionInput::LocalPlan(Box::new(plan)))
+            .await
+            .expect("initial local plan run must succeed");
+
+        let workspace_dir = ws_dir
+            .path()
+            .join(&first.workspace_id)
+            .to_string_lossy()
+            .to_string();
+
+        let result = executor
+            .execute(ExecutionInput::PluginOnly {
+                plugin: "test-plugin".to_string(),
+                workspace_dir: Some(workspace_dir),
+                scan_artifact_path: None,
+                workspace_root: None,
+                config: None,
+                provider: None,
+                model: None,
+                dry_run: false,
+                report_formats: vec!["json".to_string()],
+            })
+            .await
+            .expect("plugin-only run from workspace dir must succeed");
+
+        assert!(
+            result.success,
+            "expected success; errors: {:?}",
+            result.errors
+        );
+        assert!(!result.report_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_plugin_only_dry_run_skips_plugin_execution() {
+        let ws_dir = TempDir::new().unwrap();
+        let artifact_ws_dir = TempDir::new().unwrap();
+
+        // Register a plugin that would panic if actually invoked.
+        struct PanicPlugin;
+
+        #[async_trait]
+        impl WorkflowPlugin for PanicPlugin {
+            fn name(&self) -> &str {
+                "test-plugin"
+            }
+            fn metadata(&self) -> PluginMetadata {
+                PluginMetadata::new("test-plugin", "1.0.0", "Should not run.")
+            }
+            fn supported_formats(&self) -> Vec<String> {
+                vec![]
+            }
+            fn required_tool_access(&self) -> ToolAccessLevel {
+                ToolAccessLevel::None
+            }
+            async fn run(&self, _ctx: PluginContext) -> crate::error::Result<PluginOutput> {
+                panic!("PanicPlugin::run must never be called during dry run");
+            }
+        }
+
+        let config = make_test_config(ws_dir.path().to_str().unwrap());
+        let mut registry = PluginRegistry::new();
+        registry.register(Arc::new(PanicPlugin));
+        let executor = WorkflowExecutor::new(Arc::new(config), Arc::new(registry));
+
+        // A scan artifact file does not need to be scan-shaped for a dry
+        // run, since dry-run short-circuits before the plugin ever sees it;
+        // it still must exist and parse as a valid ScanResult, so reuse a
+        // real one produced by a scan-only run.
+        let repo_dir = TempDir::new().unwrap();
+        let scan = executor
+            .execute(ExecutionInput::ScanOnly {
+                repository: repo_dir.path().to_str().unwrap().to_string(),
+                output_path: None,
+                branch: None,
+                resume: false,
+                workspace: Some(ws_dir.path().to_str().unwrap().to_string()),
+            })
+            .await
+            .expect("scan-only must succeed");
+
+        let result = executor
+            .execute(ExecutionInput::PluginOnly {
+                plugin: "test-plugin".to_string(),
+                workspace_dir: None,
+                scan_artifact_path: scan.scan_artifact_path,
+                workspace_root: Some(artifact_ws_dir.path().to_str().unwrap().to_string()),
+                config: None,
+                provider: None,
+                model: None,
+                dry_run: true,
+                report_formats: vec![],
+            })
+            .await
+            .expect("dry run must not fail");
+
+        assert!(result.is_dry_run);
+        assert!(result.report_paths.is_empty());
     }
 
     // ------------------------------------------------------------------

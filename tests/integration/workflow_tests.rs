@@ -117,6 +117,9 @@ async fn test_scan_only_workflow_produces_scan_artifact() {
         .execute(ExecutionInput::ScanOnly {
             repository: repo_dir.to_string_lossy().to_string(),
             output_path: None,
+            branch: None,
+            resume: false,
+            workspace: None,
         })
         .await
         .expect("scan-only execution must succeed");

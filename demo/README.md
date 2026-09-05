@@ -1,4 +1,4 @@
-# Examples
+# Demo
 
 This directory contains runnable example files for XZardgz. Each subdirectory
 covers a different configuration or workflow surface. Copy the files you need
