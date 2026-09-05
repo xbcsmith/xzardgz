@@ -1,12 +1,12 @@
 # Security Review Report
 
-Generated at: 2026-09-05T19:09:24Z
+Generated at: 2026-09-05T21:35:58Z
 
 Repository: repo
 
-Workspace: 01M1SFKEXYWZRYM4MTCV3STJCZ
+Workspace: 01M1SQZTVZVT3CAHWYYS9VWHFR
 
-Risk band: CRITICAL
+Risk band: HIGH
 
 ## Summary
 
@@ -18,7 +18,7 @@ Total findings: 1
 
 Findings by severity:
 
-- CRITICAL: 1
+- HIGH: 1
 
 ## Findings by Category
 
@@ -26,7 +26,7 @@ Findings by severity:
 
 | Severity | CWE | OWASP | File | Symbol | Evidence | Impact | Remediation |
 |----------|-----|-------|------|--------|----------|--------|-------------|
-| CRITICAL | CWE-798 | A07:2021 | src/main.rs:10 |  | Possible credential reference | data exposure | use env vars |
+| HIGH | CWE-798 | A07:2021 | src/main.rs:10 |  | Possible credential reference | data exposure | use env vars |
 
 ## Confidence
 

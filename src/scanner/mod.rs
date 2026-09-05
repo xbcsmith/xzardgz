@@ -29,7 +29,7 @@
 //! | [`patterns`]  | [`PatternSet`], [`PatternRegistry`]             |
 //! | [`preselect`] | [`PluginContentScanner`]                        |
 //! | [`result`]    | [`ScanResult`] and supporting data types        |
-//! | [`scoring`]   | [`ScoringSignal`], [`ScoringInput`], [`ConfidenceScorer`] |
+//! | [`scoring`]   | [`ScoringSignal`], [`ScoringInput`], [`ScoringConfig`], [`ScoringResult`], [`ConfidenceScorer`] |
 
 pub mod config;
 pub mod findings;
@@ -55,7 +55,10 @@ pub use self::preselect::PluginContentScanner;
 pub use self::result::{
     FileEntry, LanguageStats, PluginPreselection, SCAN_RESULT_VERSION, ScanResult,
 };
-pub use self::scoring::{ConfidenceScorer, ScoringInput, ScoringSignal};
+pub use self::scoring::{
+    ConfidenceScorer, ScoringConfig, ScoringInput, ScoringResult, ScoringSignal, VIOLATION_FLOOR,
+    VIOLATION_REVIEW_WEIGHT,
+};
 
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
