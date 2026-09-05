@@ -1,19 +1,34 @@
 {
   "version": "1",
-  "report_id": "01M1SEPH3C19STXYDTY792NBTF",
-  "generated_at": "2026-09-05T18:53:36.237090Z",
+  "report_id": "01M1SFKF444F3KMG4H0W5RW0Y9",
+  "generated_at": "2026-09-05T19:09:24.485118Z",
   "plugin_name": "security-review",
   "repository_name": "repo",
   "repository_url": null,
   "head_commit": null,
-  "workspace_id": "01M1SEPGXJ5F93TAZ6W4J273K0",
+  "workspace_id": "01M1SFKEXYWZRYM4MTCV3STJCZ",
   "scan_artifact_version": null,
   "provider_metadata": null,
   "model_id": null,
   "findings": {
-    "findings": []
+    "findings": [
+      {
+        "kind": "secrets",
+        "title": "CRITICAL: data exposure",
+        "description": "Possible credential reference\n\nExploitability: high\n\nImpact: data exposure\n\nRemediation: use env vars\n\nCWE: CWE-798\n\nOWASP: A07:2021",
+        "file_path": "src/main.rs",
+        "line": 10,
+        "severity": "Critical",
+        "confidence": 0.9,
+        "tags": [
+          "secrets",
+          "CWE-798",
+          "A07:2021"
+        ]
+      }
+    ]
   },
   "diagnostics": [],
-  "risk_band": null,
+  "risk_band": "Critical",
   "scores": {}
 }

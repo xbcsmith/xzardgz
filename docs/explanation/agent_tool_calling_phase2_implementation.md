@@ -143,3 +143,62 @@ cargo test --all-features
 ```
 
 All tests passed, 0 failed.
+
+## Phase 2 Gap Fixes
+
+After the initial Phase 2 implementation, two residual gaps were identified and
+closed.
+
+### Gap 1 — `run_single_turn` fallback removed from `AgentSession`
+
+The plan explicitly states: "this plan does not preserve a single-shot fallback
+path for providers without tool-calling support." After Phase 2 landed, the
+fallback path still existed inside `AgentSession::run` itself (lines 142-146):
+when `capabilities.tools == false`, `run` delegated to the private
+`run_single_turn` method instead of returning an error. This contradicted the
+plan even though the plugin-level path was already safe (blocked upstream by
+`build_agent_session`).
+
+Changes made to `src/agent/session.rs`:
+
+- Replaced the
+  `if !capabilities.tools { return self.run_single_turn(input).await; }` branch
+  with
+  `Err(PipelineError::Provider("this provider does not support tool calling".to_string()))`.
+- Deleted the entire `run_single_turn` private method and its doc comment.
+- Updated the `run` doc comment to remove the reference to the now-deleted
+  fallback and to state that tool-calling support is required.
+- Renamed and rewrote the test
+  `test_run_uses_single_turn_fallback_when_provider_has_no_tool_support` to
+  `test_run_returns_error_when_provider_does_not_support_tools`, asserting
+  `result.is_err()` and that the error message contains `"tool calling"`. The
+  `expect_complete` expectation was removed because the provider must never be
+  called when tools are unsupported.
+
+### Gap 2 — `AgentState` dead code deleted
+
+`src/agent/state.rs` contained `AgentState`, an iteration-tracking helper that
+had no callers outside its own file after Phase 1 deleted `Agent` and
+`AgentExecutor`. The module was still declared in `src/agent/mod.rs` and its doc
+table.
+
+Changes made:
+
+- Deleted `src/agent/state.rs` in full.
+- Removed `pub mod state;` from `src/agent/mod.rs`.
+- Removed the
+  `[\`state\`]`row from the module layout table in`src/agent/mod.rs`'s doc
+  comment.
+
+### Gap-Fix Verification
+
+Full quality-gate sequence re-run after both gap fixes, all clean:
+
+```text
+cargo fmt --all
+cargo check --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+```
+
+All tests passed, 0 failed.

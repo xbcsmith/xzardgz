@@ -121,10 +121,10 @@ impl AgentSession {
 
     /// Runs the agent with the provided user input.
     ///
-    /// If the provider does not support tool calling, delegates immediately to
-    /// [`run_single_turn`][Self::run_single_turn].  Otherwise enters a bounded
-    /// multi-turn loop that processes tool calls until the provider returns a
-    /// plain-text reply or `max_turns` is exhausted.
+    /// Enters a bounded multi-turn provider-tool loop that processes tool calls
+    /// until the provider returns a plain-text reply or `max_turns` is exhausted.
+    /// There is no single-shot fallback: if the provider does not advertise tool
+    /// calling support, this method returns an error immediately.
     ///
     /// # Arguments
     ///
@@ -136,13 +136,16 @@ impl AgentSession {
     ///
     /// # Errors
     ///
+    /// Returns [`PipelineError::Provider`] when the provider does not support
+    /// tool calling or on provider API failures.
     /// Returns [`PipelineError::Agent`] if `max_turns` is reached without a
     /// terminal response or if the context mutex becomes poisoned.
-    /// Returns [`PipelineError::Provider`] on provider API failures.
     pub async fn run(&self, input: &str) -> Result<String> {
-        // Delegate to single-turn path when provider does not support tools.
+        // Require tool-calling support; there is no single-shot fallback path.
         if !self.provider.metadata().capabilities.tools {
-            return self.run_single_turn(input).await;
+            return Err(PipelineError::Provider(
+                "this provider does not support tool calling".to_string(),
+            ));
         }
 
         // Add user message to context and persist to transcript.
@@ -226,56 +229,6 @@ impl AgentSession {
         }
 
         Err(PipelineError::Agent("max turns reached".to_string()))
-    }
-
-    /// Runs a single provider completion without tool support.
-    ///
-    /// Used as a fallback when the provider does not advertise tool calling
-    /// capability.
-    ///
-    /// # Arguments
-    ///
-    /// * `input` - The user message to send to the provider.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PipelineError::Provider`] on provider API failures or
-    /// [`PipelineError::Agent`] if the context mutex is poisoned.
-    async fn run_single_turn(&self, input: &str) -> Result<String> {
-        // Add user message.
-        {
-            // SAFETY: lock is released at end of this block.
-            let mut ctx = self
-                .context
-                .lock()
-                .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
-            ctx.add_message(Message::user(input));
-        }
-
-        // Snapshot messages for the completion call.
-        let messages = {
-            // SAFETY: lock is released at end of this block.
-            let ctx = self
-                .context
-                .lock()
-                .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
-            ctx.get_messages().to_vec()
-        };
-
-        let response = self.provider.complete(&messages, &[]).await?;
-
-        // Store response in context.
-        {
-            // SAFETY: lock is released at end of this block.
-            let mut ctx = self
-                .context
-                .lock()
-                .map_err(|_| PipelineError::Agent("context lock poisoned".to_string()))?;
-            ctx.add_message(response.clone());
-        }
-        self.persist_transcript(&response)?;
-
-        Ok(response.content)
     }
 
     /// Appends a single JSON line for `message` to the transcript file.
@@ -381,7 +334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_uses_single_turn_fallback_when_provider_has_no_tool_support() {
+    async fn test_run_returns_error_when_provider_does_not_support_tools() {
         let mut mock = MockProvider::new();
         mock.expect_metadata().returning(|| ProviderMetadata {
             name: "mock".to_string(),
@@ -392,15 +345,16 @@ mod tests {
                 vision: false,
             },
         });
-        mock.expect_complete()
-            .times(1)
-            .returning(|_, _| Ok(Message::assistant("single turn response")));
         let provider = Arc::new(mock);
         let context = AgentContext::new("system".to_string(), 4096);
         let session = AgentSession::new(provider, context, ToolRegistry::new());
         let result = session.run("input").await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "single turn response");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("tool calling"),
+            "expected 'tool calling' in error message, got: {err}"
+        );
     }
 
     #[tokio::test]

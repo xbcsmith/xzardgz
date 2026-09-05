@@ -11,9 +11,7 @@
 //! | [`session`] | `AgentSession` — the sole bounded, tool-augmented loop |
 //! | [`context`] | `AgentContext` (session metadata) and `ConversationContext` (message window) |
 //! | [`message`] | Re-exports of provider message types for agent consumers |
-//! | [`state`] | `AgentState` — lightweight iteration-tracking helper |
 
 pub mod context;
 pub mod message;
 pub mod session;
-pub mod state;
