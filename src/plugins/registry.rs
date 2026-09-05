@@ -1,8 +1,11 @@
 //! Plugin registry for discovering and dispatching named workflow plugins.
 //!
 //! [`PluginRegistry`] manages registration, lookup, listing, and dispatch of
-//! named plugins. Built-in plugins are registered at construction. Unknown and
-//! disabled plugins are explicitly rejected with structured errors.
+//! named plugins. [`PluginRegistry::new`] returns an empty registry (useful
+//! for tests that register their own fakes); [`PluginRegistry::with_builtins`]
+//! returns a registry with every built-in plugin already registered, and is
+//! what CLI command handlers should use. Unknown and disabled plugins are
+//! explicitly rejected with structured errors.
 //!
 //! # Usage
 //!
@@ -12,6 +15,10 @@
 //!
 //! let registry = PluginRegistry::new();
 //! assert_eq!(registry.plugin_count(), 0);
+//!
+//! let with_builtins = PluginRegistry::with_builtins();
+//! assert!(with_builtins.is_registered("technical-review"));
+//! assert!(with_builtins.is_registered("security-review"));
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -67,6 +74,41 @@ impl PluginRegistry {
             plugins: HashMap::new(),
             disabled: HashSet::new(),
         }
+    }
+
+    /// Creates a new `PluginRegistry` with every built-in plugin registered.
+    ///
+    /// Registers [`TechnicalReviewPlugin`][crate::plugins::technical_review::TechnicalReviewPlugin]
+    /// under `"technical-review"` and
+    /// [`SecurityReviewPlugin`][crate::plugins::security_review::SecurityReviewPlugin]
+    /// under `"security-review"`. This is the registry CLI command handlers
+    /// use; [`PluginRegistry::new`] remains an empty registry, primarily
+    /// useful for tests that register their own fake plugins.
+    ///
+    /// # Returns
+    ///
+    /// A registry with both built-in plugins registered under their
+    /// canonical names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::plugins::registry::PluginRegistry;
+    ///
+    /// let registry = PluginRegistry::with_builtins();
+    /// assert!(registry.is_registered("technical-review"));
+    /// assert!(registry.is_registered("security-review"));
+    /// assert_eq!(registry.plugin_count(), 2);
+    /// ```
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        registry.register(Arc::new(
+            crate::plugins::technical_review::TechnicalReviewPlugin,
+        ));
+        registry.register(Arc::new(
+            crate::plugins::security_review::SecurityReviewPlugin,
+        ));
+        registry
     }
 
     /// Registers a plugin in the registry under `plugin.name()`.

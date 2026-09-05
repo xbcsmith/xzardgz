@@ -194,6 +194,10 @@ pub struct ScanArgs {
     /// Overwrite an existing scan artifact at the output path.
     #[arg(long)]
     pub overwrite: bool,
+
+    /// Resume execution from an existing workspace state rather than starting fresh.
+    #[arg(long)]
+    pub resume: bool,
 }
 
 // ---------------------------------------------------------------------------

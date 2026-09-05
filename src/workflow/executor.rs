@@ -167,6 +167,9 @@ pub enum ExecutionInput {
         /// Requested report output formats. Empty means use the
         /// workspace/plugin default.
         report_formats: Vec<String>,
+        /// Output directory override for generated reports. `None` uses the
+        /// workspace's default report location.
+        output_dir: Option<String>,
     },
 }
 
@@ -369,6 +372,7 @@ impl WorkflowExecutor {
                 model,
                 dry_run,
                 report_formats,
+                output_dir,
             } => {
                 self.run_plugin_only(
                     &plugin,
@@ -380,6 +384,7 @@ impl WorkflowExecutor {
                     model,
                     dry_run,
                     report_formats,
+                    output_dir,
                 )
                 .await
             }
@@ -848,6 +853,7 @@ impl WorkflowExecutor {
         model_override: Option<String>,
         dry_run: bool,
         report_formats: Vec<String>,
+        output_dir: Option<String>,
     ) -> Result<ExecutionResult> {
         let started_at = Utc::now();
 
@@ -870,9 +876,15 @@ impl WorkflowExecutor {
         plan.steps[0].config = plugin_config;
         if !report_formats.is_empty() {
             plan.steps[0].report_formats = Some(report_formats.clone());
+        }
+        if !report_formats.is_empty() || output_dir.is_some() {
             plan.reports = Some(PlanReportOptions {
-                output_dir: None,
-                formats: Some(report_formats),
+                output_dir,
+                formats: if report_formats.is_empty() {
+                    None
+                } else {
+                    Some(report_formats)
+                },
                 overwrite: None,
             });
         }
@@ -1258,7 +1270,12 @@ impl WorkflowExecutor {
             return Ok(Vec::new());
         }
 
-        let step_dir = workspace.paths.step_reports_dir(&step.id);
+        // Prefer an explicit plan-level output directory override (mapped
+        // from `--output-dir`) over the workspace's default report location.
+        let step_dir = match plan.reports.as_ref().and_then(|r| r.output_dir.as_ref()) {
+            Some(dir) => PathBuf::from(dir).join(&step.id),
+            None => workspace.paths.step_reports_dir(&step.id),
+        };
         std::fs::create_dir_all(&step_dir)?;
 
         let report_id = Ulid::new().to_string();
@@ -1749,6 +1766,7 @@ mod tests {
                 model: None,
                 dry_run: false,
                 report_formats: vec![],
+                output_dir: None,
             })
             .await;
 
@@ -1797,6 +1815,7 @@ mod tests {
                 model: None,
                 dry_run: false,
                 report_formats: vec!["json".to_string()],
+                output_dir: None,
             })
             .await
             .expect("plugin-only run from scan artifact must succeed");
@@ -1845,6 +1864,7 @@ mod tests {
                 model: None,
                 dry_run: false,
                 report_formats: vec!["json".to_string()],
+                output_dir: None,
             })
             .await
             .expect("plugin-only run from workspace dir must succeed");
@@ -1916,6 +1936,7 @@ mod tests {
                 model: None,
                 dry_run: true,
                 report_formats: vec![],
+                output_dir: None,
             })
             .await
             .expect("dry run must not fail");

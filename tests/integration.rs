@@ -16,5 +16,8 @@ mod watcher_tests;
 #[path = "integration/workflow_tests.rs"]
 mod workflow_tests;
 
+#[path = "integration/run_command_tests.rs"]
+mod run_command_tests;
+
 #[path = "integration/sarif_tests.rs"]
 mod sarif_tests;

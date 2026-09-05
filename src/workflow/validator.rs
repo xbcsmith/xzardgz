@@ -195,6 +195,102 @@ pub fn build_direct_invocation_plan(
     }
 }
 
+/// Applies CLI-level overrides onto an already-constructed or parsed
+/// [`WorkflowPlan`], in place.
+///
+/// Used by the `run` command handler to merge `--branch`, `--workspace`,
+/// `--dry-run`, `--resume`, `--max-findings`, `--report-format`, and
+/// `--output-dir` CLI flags onto a plan, whether it came from
+/// [`build_direct_invocation_plan`] or was parsed from a plan file. Only
+/// supplied overrides are applied; omitted ones (`None`, `false`, or empty)
+/// leave the plan's existing value unchanged.
+///
+/// `dry_run` and `resume` are one-directional: passing `true` forces the
+/// corresponding field to `true`, but passing `false` never forces it back
+/// to `false` -- a plan file's own `dry_run: true` / `resume: true` is never
+/// silently undone by the flag's absence on the command line.
+///
+/// # Arguments
+///
+/// * `plan` - The plan to mutate in place.
+/// * `branch` - Optional branch override.
+/// * `workspace` - Optional workspace root override.
+/// * `dry_run` - When `true`, forces `plan.dry_run = true`.
+/// * `resume` - When `true`, forces `plan.resume = true`.
+/// * `max_findings` - Optional per-step finding cap, applied to every step.
+/// * `report_formats` - Report formats; applied to every step and the
+///   plan-level report options when non-empty.
+/// * `output_dir` - Optional report output directory override.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::workflow::plan::WorkflowPlan;
+/// use xzardgz::workflow::validator::apply_run_overrides;
+///
+/// let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+/// apply_run_overrides(&mut plan, None, None, true, false, None, vec![], None);
+/// assert!(plan.dry_run);
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn apply_run_overrides(
+    plan: &mut WorkflowPlan,
+    branch: Option<String>,
+    workspace: Option<String>,
+    dry_run: bool,
+    resume: bool,
+    max_findings: Option<u32>,
+    report_formats: Vec<String>,
+    output_dir: Option<String>,
+) {
+    if branch.is_some() {
+        plan.branch = branch;
+    }
+    if workspace.is_some() {
+        plan.workspace = workspace;
+    }
+    if dry_run {
+        plan.dry_run = true;
+    }
+    if resume {
+        plan.resume = true;
+    }
+    if let Some(max_findings) = max_findings {
+        for step in &mut plan.steps {
+            step.max_findings = Some(max_findings);
+        }
+    }
+    if !report_formats.is_empty() {
+        for step in &mut plan.steps {
+            step.report_formats = Some(report_formats.clone());
+        }
+    }
+    if !report_formats.is_empty() || output_dir.is_some() {
+        let formats = if report_formats.is_empty() {
+            None
+        } else {
+            Some(report_formats)
+        };
+        match plan.reports.as_mut() {
+            Some(r) => {
+                if formats.is_some() {
+                    r.formats = formats;
+                }
+                if output_dir.is_some() {
+                    r.output_dir = output_dir;
+                }
+            }
+            None => {
+                plan.reports = Some(PlanReportOptions {
+                    output_dir,
+                    formats,
+                    overwrite: None,
+                });
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -295,6 +391,131 @@ mod tests {
         assert!(
             validate_plan(&plan).is_ok(),
             "built plan should pass validation"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // apply_run_overrides
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_apply_run_overrides_sets_branch_and_workspace() {
+        let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        apply_run_overrides(
+            &mut plan,
+            Some("feature-x".to_string()),
+            Some("/tmp/ws".to_string()),
+            false,
+            false,
+            None,
+            vec![],
+            None,
+        );
+        assert_eq!(plan.branch.as_deref(), Some("feature-x"));
+        assert_eq!(plan.workspace.as_deref(), Some("/tmp/ws"));
+    }
+
+    #[test]
+    fn test_apply_run_overrides_true_flags_force_true_but_omitted_does_not_reset() {
+        let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        plan.dry_run = true;
+        plan.resume = true;
+
+        // Passing `false` for both must not undo the plan's existing `true`.
+        apply_run_overrides(&mut plan, None, None, false, false, None, vec![], None);
+        assert!(plan.dry_run, "false must not reset an existing true");
+        assert!(plan.resume, "false must not reset an existing true");
+
+        let mut fresh = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        apply_run_overrides(&mut fresh, None, None, true, true, None, vec![], None);
+        assert!(fresh.dry_run);
+        assert!(fresh.resume);
+    }
+
+    #[test]
+    fn test_apply_run_overrides_applies_max_findings_to_every_step() {
+        let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        plan.steps.push(PluginStep {
+            id: "step2".to_string(),
+            description: None,
+            plugin: "technical-review".to_string(),
+            config: None,
+            dependencies: vec![],
+            report_formats: None,
+            max_findings: None,
+            severity_threshold: None,
+        });
+
+        apply_run_overrides(&mut plan, None, None, false, false, Some(25), vec![], None);
+
+        for step in &plan.steps {
+            assert_eq!(step.max_findings, Some(25));
+        }
+    }
+
+    #[test]
+    fn test_apply_run_overrides_sets_report_formats_on_steps_and_plan() {
+        let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        apply_run_overrides(
+            &mut plan,
+            None,
+            None,
+            false,
+            false,
+            None,
+            vec!["json".to_string(), "sarif".to_string()],
+            None,
+        );
+
+        assert_eq!(
+            plan.steps[0].report_formats,
+            Some(vec!["json".to_string(), "sarif".to_string()])
+        );
+        let reports = plan.reports.expect("reports options must be populated");
+        assert_eq!(
+            reports.formats,
+            Some(vec!["json".to_string(), "sarif".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_apply_run_overrides_sets_output_dir_without_clobbering_existing_formats() {
+        let mut plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        plan.reports = Some(PlanReportOptions {
+            output_dir: None,
+            formats: Some(vec!["markdown".to_string()]),
+            overwrite: None,
+        });
+
+        apply_run_overrides(
+            &mut plan,
+            None,
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("/tmp/out".to_string()),
+        );
+
+        let reports = plan.reports.expect("reports options must remain populated");
+        assert_eq!(reports.output_dir.as_deref(), Some("/tmp/out"));
+        assert_eq!(reports.formats, Some(vec!["markdown".to_string()]));
+    }
+
+    #[test]
+    fn test_apply_run_overrides_no_overrides_leaves_plan_unchanged() {
+        let plan = WorkflowPlan::direct_plugin_invocation("security-review", ".");
+        let mut mutated = plan.clone();
+        apply_run_overrides(&mut mutated, None, None, false, false, None, vec![], None);
+        assert_eq!(mutated.branch, plan.branch);
+        assert_eq!(mutated.workspace, plan.workspace);
+        assert_eq!(mutated.dry_run, plan.dry_run);
+        assert_eq!(mutated.resume, plan.resume);
+        assert_eq!(mutated.steps[0].max_findings, plan.steps[0].max_findings);
+        assert_eq!(
+            mutated.steps[0].report_formats,
+            plan.steps[0].report_formats
         );
     }
 }
