@@ -3,7 +3,7 @@
 //! This module contains [`SecurityReviewPlugin`], the built-in plugin that
 //! performs a security review of a repository by combining static scan data
 //! from [`ScanResult`] with AI-assisted analysis from the configured
-//! [`Provider`].
+//! [`Provider`] via a multi-turn [`AgentSession`].
 //!
 //! # Execution Flow
 //!
@@ -12,17 +12,20 @@
 //! 3. Use [`SecurityFilePrioritizer`] to select the most relevant files.
 //! 4. Determine active [`SecurityCategory`] list from config flags.
 //! 5. Build system and user prompts.
-//! 6. Call [`Provider::complete`] to obtain an AI analysis.
-//! 7. Parse the JSON response into [`SecurityReviewFinding`]s.
-//! 8. Filter by confidence threshold.
-//! 9. Filter by severity threshold.
-//! 10. Cap findings at `max_findings`.
-//! 11. Compute the overall [`RiskBand`].
-//! 12. Write `security_review.md`, `security_review.json`, and optionally
+//! 6. Build an [`AgentSession`] via [`PluginContext::build_agent_session`];
+//!    fail immediately with [`PipelineError::Provider`] if the provider does
+//!    not support tool calling.
+//! 7. Run the agent session with the user prompt.
+//! 8. Parse the JSON response into [`SecurityReviewFinding`]s.
+//! 9. Filter by confidence threshold.
+//! 10. Filter by severity threshold.
+//! 11. Cap findings at `max_findings`.
+//! 12. Compute the overall [`RiskBand`].
+//! 13. Write `security_review.md`, `security_review.json`, and optionally
 //!     `security_review.sarif`.
-//! 13. If `fail_on_critical` is set and critical findings are present, set
+//! 14. If `fail_on_critical` is set and critical findings are present, set
 //!     `output.completed = false` to signal failure.
-//! 14. Return a [`PluginOutput`] with report paths and risk band.
+//! 15. Return a [`PluginOutput`] with report paths and risk band.
 
 use std::path::PathBuf;
 
@@ -34,7 +37,6 @@ use crate::error::Result;
 use crate::plugins::context::{PluginContext, ToolAccessLevel};
 use crate::plugins::output::PluginOutput;
 use crate::plugins::trait_def::{PluginMetadata, WorkflowPlugin};
-use crate::providers::types::{Message, Tool};
 use crate::reports::findings::PluginFindings;
 use crate::scanner::findings::FindingSeverity;
 
@@ -184,20 +186,21 @@ impl WorkflowPlugin for SecurityReviewPlugin {
 
         let user_prompt = build_user_prompt(&ctx.scan_result, &prioritized_files, &categories);
 
-        let messages = vec![Message::system(system_prompt), Message::user(user_prompt)];
-
-        // Step 6: Call the AI provider.
-        let response = match ctx.provider.complete(&messages, &[] as &[Tool]).await {
-            Ok(msg) => msg,
+        // Step 6: Build the agent session and run the multi-turn analysis.
+        // Returns a hard error when the provider does not support tool calling.
+        let session =
+            ctx.build_agent_session(system_prompt, 8192, config.agent_max_turns as usize)?;
+        let response_content = match session.run(&user_prompt).await {
+            Ok(content) => content,
             Err(e) => {
                 return Ok(PluginOutput::failure(format!(
-                    "security-review: provider error: {e}"
+                    "security-review: agent session failed: {e}"
                 )));
             }
         };
 
         // Step 7: Parse findings from the response.
-        let mut findings = parse_ai_response(&response.content);
+        let mut findings = parse_ai_response(&response_content);
 
         // Step 8: Filter by confidence threshold.
         findings.retain(|f| f.confidence >= config.confidence_threshold);
@@ -489,14 +492,16 @@ mod tests {
     use crate::governance::GovernanceChecker;
     use crate::plugins::context::PluginContext;
     use crate::providers::base::MockProvider;
-    use crate::providers::types::Message;
+    use crate::providers::types::{
+        FunctionCall, Message, ProviderCapabilities, ProviderMetadata, ToolCall,
+    };
     use crate::scanner::findings::FindingSeverity;
     use crate::scanner::result::{PluginPreselection, SCAN_RESULT_VERSION, ScanResult};
     use crate::tools::registry::ToolRegistry;
     use crate::workspace::WorkspaceManager;
     use chrono::Utc;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     // ------------------------------------------------------------------
     // Helpers
@@ -777,59 +782,88 @@ mod tests {
     // Async integration tests (requires tokio)
     // ------------------------------------------------------------------
 
+    /// Returns a [`MockProvider`] that advertises tool support and returns a
+    /// tool call on the first completion, then `final_json` on the second.
+    fn make_tool_calling_provider(final_json: &'static str) -> MockProvider {
+        let mut mock = MockProvider::new();
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: true,
+                vision: false,
+            },
+        });
+        let call_count = Arc::new(Mutex::new(0u32));
+        mock.expect_complete().returning(move |_, _| {
+            let mut count = call_count.lock().expect("mutex poisoned");
+            *count += 1;
+            if *count == 1 {
+                let mut msg = Message::assistant("");
+                msg.tool_calls = Some(vec![ToolCall {
+                    id: "tc1".to_string(),
+                    function: FunctionCall {
+                        name: "read_file".to_string(),
+                        arguments: "{\"path\":\"src/main.rs\"}".to_string(),
+                    },
+                }]);
+                Ok(msg)
+            } else {
+                Ok(Message::assistant(final_json))
+            }
+        });
+        mock
+    }
+
     #[tokio::test]
     async fn test_security_review_plugin_run_with_mock_provider_empty_findings_returns_success() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete()
-            .returning(|_, _| Ok(Message::assistant(r#"{"findings":[]}"#)));
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let mock = make_tool_calling_provider("{\"findings\":[]}");
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() can fail only on I/O or provider errors; mock provider succeeds.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(output.completed, "plugin must report completed");
     }
 
     #[tokio::test]
     async fn test_security_review_plugin_run_with_mock_provider_with_findings_returns_success() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete().returning(|_, _| {
-            Ok(Message::assistant(
-                r#"{"findings":[
-                    {"category":"secrets","severity":"high",
-                     "evidence":"API key found in source",
-                     "exploitability":"Trivial - key is directly usable",
-                     "impact":"Full credential compromise",
-                     "remediation":"Move to environment variable",
-                     "confidence":0.9}
-                ]}"#,
-            ))
-        });
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"secrets\",\"severity\":\"high\",",
+            "\"evidence\":\"API key found in source\",",
+            "\"exploitability\":\"Trivial - key is directly usable\",",
+            "\"impact\":\"Full credential compromise\",",
+            "\"remediation\":\"Move to environment variable\",",
+            "\"confidence\":0.9}]}"
+        );
+        let mock = make_tool_calling_provider(finding_json);
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() with a valid mock provider cannot fail.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(output.completed, "plugin must report completed");
         assert_eq!(output.findings.len(), 1, "should have one finding");
     }
 
     #[tokio::test]
     async fn test_security_review_plugin_run_provider_error_returns_failure_output() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
         let mut mock = MockProvider::new();
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: true,
+                vision: false,
+            },
+        });
         mock.expect_complete()
             .returning(|_, _| Err(PipelineError::Provider("api unavailable".to_string())));
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
         // SAFETY: run() returns Ok(PluginOutput::failure) rather than Err on provider errors.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             !output.completed,
             "plugin must report not completed on provider error"
@@ -837,22 +871,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_security_review_plugin_run_disabled_returns_success_immediately() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
+    async fn test_security_review_plugin_run_no_tool_support_returns_hard_error() {
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
         let mut mock = MockProvider::new();
-        // complete() must NOT be called when plugin is disabled.
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-no-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: false,
+                vision: false,
+            },
+        });
         mock.expect_complete().never();
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
+        let result = SecurityReviewPlugin.run(ctx).await;
+        assert!(
+            result.is_err(),
+            "must return a hard error when provider lacks tool support"
+        );
+        let msg = result.expect_err("expected Err").to_string();
+        assert!(
+            msg.contains("tool calling"),
+            "error must mention tool calling, got: {msg}"
+        );
+    }
 
+    #[tokio::test]
+    async fn test_security_review_plugin_run_exercises_multi_turn_tool_call_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let call_count = Arc::new(Mutex::new(0u32));
+        let call_count_check = Arc::clone(&call_count);
+        let mut mock = MockProvider::new();
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: true,
+                vision: false,
+            },
+        });
+        mock.expect_complete().returning(move |_, _| {
+            let mut count = call_count.lock().expect("mutex poisoned");
+            *count += 1;
+            if *count == 1 {
+                let mut msg = Message::assistant("");
+                msg.tool_calls = Some(vec![ToolCall {
+                    id: "tc1".to_string(),
+                    function: FunctionCall {
+                        name: "read_file".to_string(),
+                        arguments: "{\"path\":\"src/lib.rs\"}".to_string(),
+                    },
+                }]);
+                Ok(msg)
+            } else {
+                Ok(Message::assistant("{\"findings\":[]}"))
+            }
+        });
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
+        assert!(
+            output.completed,
+            "plugin must complete after multi-turn session"
+        );
+        let final_count = *call_count_check.lock().expect("mutex poisoned");
+        assert!(
+            final_count >= 2,
+            "at least two complete() calls required for tool-call round trip, got {final_count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_review_plugin_run_disabled_returns_success_immediately() {
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let mut mock = MockProvider::new();
+        // Neither metadata() nor complete() is called when plugin is disabled.
+        mock.expect_metadata().never();
+        mock.expect_complete().never();
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let disabled_cfg = SecurityReviewConfig {
             enabled: false,
             ..SecurityReviewConfig::default()
         };
         let ctx = make_context(tmp.path().to_str().unwrap(), Some(disabled_cfg), provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() returns immediately with success when disabled.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(output.completed, "disabled plugin must return completed");
         assert!(
             output.summary.contains("disabled"),
@@ -862,16 +967,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_review_plugin_run_writes_markdown_report() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete()
-            .returning(|_, _| Ok(Message::assistant(r#"{"findings":[]}"#)));
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let mock = make_tool_calling_provider("{\"findings\":[]}");
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() with empty findings succeeds without errors.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             output
                 .report_paths
@@ -884,16 +984,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_review_plugin_run_writes_json_report() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete()
-            .returning(|_, _| Ok(Message::assistant(r#"{"findings":[]}"#)));
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let mock = make_tool_calling_provider("{\"findings\":[]}");
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() with empty findings succeeds without errors.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             output
                 .report_paths
@@ -906,16 +1001,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_review_plugin_run_writes_sarif_report() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete()
-            .returning(|_, _| Ok(Message::assistant(r#"{"findings":[]}"#)));
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let mock = make_tool_calling_provider("{\"findings\":[]}");
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
         let ctx = make_context(tmp.path().to_str().unwrap(), None, provider);
-        let plugin = SecurityReviewPlugin;
-        // SAFETY: run() with empty findings succeeds without errors.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             output
                 .report_paths
@@ -928,22 +1018,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_review_plugin_run_invalid_config_returns_failure() {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
         let mut mock = MockProvider::new();
-        // complete() must NOT be called when config is invalid.
+        // Neither metadata() nor complete() is called when config is invalid.
+        mock.expect_metadata().never();
         mock.expect_complete().never();
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-
-        // Invalid: max_findings = 0 triggers config validation failure.
         let invalid_cfg = SecurityReviewConfig {
             max_findings: 0,
             ..SecurityReviewConfig::default()
         };
         let ctx = make_context(tmp.path().to_str().unwrap(), Some(invalid_cfg), provider);
-        let plugin = SecurityReviewPlugin;
         // SAFETY: run() returns Ok(PluginOutput::failure) on config error, not Err.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             !output.completed,
             "invalid config must produce a failure output"
@@ -953,31 +1040,24 @@ mod tests {
     #[tokio::test]
     async fn test_security_review_plugin_run_fail_on_critical_with_critical_finding_returns_failure()
      {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete().returning(|_, _| {
-            Ok(Message::assistant(
-                r#"{"findings":[
-                    {"category":"secrets","severity":"critical",
-                     "evidence":"Hardcoded production credentials detected",
-                     "exploitability":"Trivial - credentials are directly usable",
-                     "impact":"Full system compromise possible",
-                     "remediation":"Remove credentials and rotate immediately",
-                     "confidence":0.95}
-                ]}"#,
-            ))
-        });
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let critical_json = concat!(
+            "{\"findings\":[{\"category\":\"secrets\",\"severity\":\"critical\",",
+            "\"evidence\":\"Hardcoded production credentials detected\",",
+            "\"exploitability\":\"Trivial - credentials are directly usable\",",
+            "\"impact\":\"Full system compromise possible\",",
+            "\"remediation\":\"Remove credentials and rotate immediately\",",
+            "\"confidence\":0.95}]}"
+        );
+        let mock = make_tool_calling_provider(critical_json);
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-
         let cfg = SecurityReviewConfig {
             fail_on_critical: true,
             ..SecurityReviewConfig::default()
         };
         let ctx = make_context(tmp.path().to_str().unwrap(), Some(cfg), provider);
-        let plugin = SecurityReviewPlugin;
         // SAFETY: run() returns Ok(PluginOutput::failure) when fail_on_critical triggers.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             !output.completed,
             "fail_on_critical with a critical finding must produce a failure output"
@@ -987,31 +1067,24 @@ mod tests {
     #[tokio::test]
     async fn test_security_review_plugin_run_fail_on_critical_without_critical_finding_returns_success()
      {
-        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut mock = MockProvider::new();
-        mock.expect_complete().returning(|_, _| {
-            Ok(Message::assistant(
-                r#"{"findings":[
-                    {"category":"auth","severity":"high",
-                     "evidence":"Missing rate limiting on login endpoint",
-                     "exploitability":"Moderate effort required",
-                     "impact":"Account takeover via brute force",
-                     "remediation":"Implement rate limiting and account lockout",
-                     "confidence":0.85}
-                ]}"#,
-            ))
-        });
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let high_json = concat!(
+            "{\"findings\":[{\"category\":\"auth\",\"severity\":\"high\",",
+            "\"evidence\":\"Missing rate limiting on login endpoint\",",
+            "\"exploitability\":\"Moderate effort required\",",
+            "\"impact\":\"Account takeover via brute force\",",
+            "\"remediation\":\"Implement rate limiting and account lockout\",",
+            "\"confidence\":0.85}]}"
+        );
+        let mock = make_tool_calling_provider(high_json);
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-
         let cfg = SecurityReviewConfig {
             fail_on_critical: true,
             ..SecurityReviewConfig::default()
         };
         let ctx = make_context(tmp.path().to_str().unwrap(), Some(cfg), provider);
-        let plugin = SecurityReviewPlugin;
         // SAFETY: run() returns success when fail_on_critical is set but no critical findings exist.
-        let output = plugin.run(ctx).await.unwrap();
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
         assert!(
             output.completed,
             "fail_on_critical with only high findings must still succeed"

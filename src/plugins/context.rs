@@ -13,10 +13,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::context::AgentContext;
+use crate::agent::session::AgentSession;
 use crate::config::Config;
 use crate::diagnostics::{Diagnostic, Diagnostics};
+use crate::error::{PipelineError, Result};
 use crate::governance::GovernanceChecker;
 use crate::providers::base::Provider;
+use crate::providers::types::Message;
 use crate::scanner::result::ScanResult;
 use crate::tools::registry::ToolRegistry;
 use crate::workspace::WorkspaceManager;
@@ -225,6 +229,69 @@ impl PluginContext {
     pub fn workspace_id(&self) -> &str {
         &self.state.workspace_id
     }
+
+    /// Constructs an [`AgentSession`] from the provider and tool registry
+    /// carried by this context.
+    ///
+    /// This is the sole entry point for starting a multi-turn, tool-augmented
+    /// agent loop from within a plugin.  The method enforces the hard
+    /// requirement that tool calling is mandatory: it returns
+    /// [`PipelineError::Provider`] immediately when
+    /// `provider.metadata().capabilities.tools` is `false`, so no single-shot
+    /// fallback path exists.
+    ///
+    /// Calling this method moves the `tool_registry` out of `self` (replaced
+    /// with an empty registry), so it may be called at most once per context.
+    ///
+    /// # Arguments
+    ///
+    /// * `system_prompt` - System instruction pre-seeded into the session
+    ///   context before the first provider call.
+    /// * `max_tokens` - Upper bound on the estimated token budget for the
+    ///   session context window.
+    /// * `max_turns` - Maximum number of provider-tool loop turns before the
+    ///   session returns [`PipelineError::Agent`].
+    ///
+    /// # Returns
+    ///
+    /// An [`AgentSession`] ready to accept a user prompt via
+    /// [`AgentSession::run`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Provider`] when the provider does not support
+    /// tool calling (`capabilities.tools == false`).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use xzardgz::plugins::context::PluginContext;
+    /// // let session = ctx.build_agent_session(system_prompt, 8192, 15)?;
+    /// // let response = session.run(&user_prompt).await?;
+    /// ```
+    pub fn build_agent_session(
+        &mut self,
+        system_prompt: String,
+        max_tokens: usize,
+        max_turns: usize,
+    ) -> Result<AgentSession> {
+        if !self.provider.metadata().capabilities.tools {
+            return Err(PipelineError::Provider(
+                "this provider does not support tool calling".to_string(),
+            ));
+        }
+        let mut context = AgentContext::new(system_prompt.clone(), max_tokens);
+        // Pre-seed the system message so every provider completion has the
+        // correct persona and output-format instruction from the first turn.
+        context.add_message(Message::system(system_prompt));
+        // Move the tool registry out of this context; the session takes
+        // ownership of all tool definitions and executors.
+        let registry = std::mem::take(&mut self.tool_registry);
+        Ok(
+            AgentSession::new(Arc::clone(&self.provider), context, registry)
+                .with_max_turns(max_turns),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,5 +466,106 @@ mod tests {
             "test warning",
         ));
         assert_eq!(ctx.diagnostics.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // build_agent_session
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_context_build_agent_session_returns_err_when_provider_lacks_tools() {
+        use crate::providers::types::{ProviderCapabilities, ProviderMetadata};
+        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manager = crate::workspace::WorkspaceManager::create(
+            tmp.path().to_str().unwrap(),
+            "test://repo",
+            None,
+            None,
+        )
+        .unwrap();
+        let state = manager.state.clone();
+        let workspace = std::sync::Arc::new(manager);
+        let config = std::sync::Arc::new(Config::default());
+        let mut mock = MockProvider::new();
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-no-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: false,
+                vision: false,
+            },
+        });
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider + Send + Sync> =
+            std::sync::Arc::new(mock);
+        let tool_registry = ToolRegistry::new();
+        let governance =
+            crate::governance::GovernanceChecker::from_config(&test_governance_config()).unwrap();
+        let mut ctx = PluginContext::new(
+            config,
+            workspace,
+            state,
+            make_scan_result(),
+            provider,
+            tool_registry,
+            governance,
+        );
+        let result = ctx.build_agent_session("system".to_string(), 4096, 15);
+        assert!(
+            result.is_err(),
+            "expected an error when provider does not support tools"
+        );
+        let msg = result.err().expect("expected Err").to_string();
+        assert!(
+            msg.contains("tool calling"),
+            "error must mention tool calling, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_plugin_context_build_agent_session_returns_ok_when_provider_supports_tools() {
+        use crate::providers::types::{ProviderCapabilities, ProviderMetadata};
+        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let manager = crate::workspace::WorkspaceManager::create(
+            tmp.path().to_str().unwrap(),
+            "test://repo",
+            None,
+            None,
+        )
+        .unwrap();
+        let state = manager.state.clone();
+        let workspace = std::sync::Arc::new(manager);
+        let config = std::sync::Arc::new(Config::default());
+        let mut mock = MockProvider::new();
+        mock.expect_metadata().returning(|| ProviderMetadata {
+            name: "mock-with-tools".to_string(),
+            models: vec![],
+            capabilities: ProviderCapabilities {
+                streaming: false,
+                tools: true,
+                vision: false,
+            },
+        });
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider + Send + Sync> =
+            std::sync::Arc::new(mock);
+        let tool_registry = ToolRegistry::new();
+        let governance =
+            crate::governance::GovernanceChecker::from_config(&test_governance_config()).unwrap();
+        let mut ctx = PluginContext::new(
+            config,
+            workspace,
+            state,
+            make_scan_result(),
+            provider,
+            tool_registry,
+            governance,
+        );
+        let result = ctx.build_agent_session("system".to_string(), 4096, 15);
+        assert!(
+            result.is_ok(),
+            "expected Ok(AgentSession) when provider supports tools"
+        );
     }
 }

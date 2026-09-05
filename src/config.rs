@@ -598,6 +598,13 @@ pub struct TechnicalReviewConfig {
     /// Output formats for the generated report (e.g. `["markdown", "json"]`).
     #[serde(default = "default_report_formats")]
     pub report_formats: Vec<String>,
+    /// Maximum number of agent turns allowed in the AI analysis loop.
+    #[serde(default = "default_agent_max_turns")]
+    pub agent_max_turns: u32,
+}
+
+fn default_agent_max_turns() -> u32 {
+    15
 }
 
 fn default_true() -> bool {
@@ -648,6 +655,7 @@ impl Default for TechnicalReviewConfig {
             severity_threshold: default_severity_threshold(),
             focus_areas: vec![],
             report_formats: default_report_formats(),
+            agent_max_turns: default_agent_max_turns(),
         }
     }
 }
@@ -751,6 +759,14 @@ pub struct SecurityReviewConfig {
     /// Minimum AI confidence score `[0.0, 1.0]` for a finding to be included.
     #[serde(default = "default_sec_confidence_threshold")]
     pub confidence_threshold: f64,
+    /// Maximum number of agent turns allowed in the AI analysis loop.
+    #[serde(default = "default_sec_agent_max_turns")]
+    pub agent_max_turns: u32,
+}
+
+/// Default maximum agent turns for security review.
+fn default_sec_agent_max_turns() -> u32 {
+    15
 }
 
 impl Default for SecurityReviewConfig {
@@ -775,6 +791,7 @@ impl Default for SecurityReviewConfig {
             model_override: None,
             verification_turns: default_sec_verification_turns(),
             confidence_threshold: default_sec_confidence_threshold(),
+            agent_max_turns: default_sec_agent_max_turns(),
         }
     }
 }

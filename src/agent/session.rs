@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 ///     .with_repeated_failure_threshold(5);
 /// ```
 pub struct AgentSession {
-    provider: Arc<dyn Provider>,
+    provider: Arc<dyn Provider + Send + Sync>,
     context: Mutex<AgentContext>,
     tool_registry: Arc<ToolRegistry>,
     tool_dispatcher: ToolExecutionDispatcher,
@@ -62,7 +62,7 @@ impl AgentSession {
     /// * `context` - The session context, including system prompt and token budget.
     /// * `tool_registry` - Registry of tools the provider may invoke.
     pub fn new(
-        provider: Arc<dyn Provider>,
+        provider: Arc<dyn Provider + Send + Sync>,
         context: AgentContext,
         tool_registry: ToolRegistry,
     ) -> Self {
