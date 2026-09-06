@@ -37,8 +37,9 @@ use crate::error::Result;
 use crate::plugins::context::{PluginContext, ToolAccessLevel};
 use crate::plugins::output::PluginOutput;
 use crate::plugins::trait_def::{PluginMetadata, WorkflowPlugin};
-use crate::reports::findings::PluginFindings;
+use crate::reports::findings::{PluginFinding, PluginFindings};
 use crate::scanner::findings::FindingSeverity;
+use crate::scanner::scoring::{ConfidenceScorer, ScoringConfig};
 
 use super::config::validate_security_review_config;
 use super::finding::SecurityReviewFinding;
@@ -200,29 +201,66 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         };
 
         // Step 7: Parse findings from the response.
-        let mut findings = parse_ai_response(&response_content);
+        let parsed_findings = parse_ai_response(&response_content);
 
-        // Step 8: Filter by confidence threshold.
-        findings.retain(|f| f.confidence >= config.confidence_threshold);
+        // Step 8: Score each finding and filter by blended confidence.
+        //
+        // The AI's self-reported confidence is used as the AI score in the blend.
+        // Findings that trigger an AbsoluteViolation signal always pass the
+        // threshold regardless of the blended value, because a deterministic
+        // rule breach must never be silently dropped.
+        let scoring_cfg = ScoringConfig {
+            ai_confidence_weight: config.ai_confidence_weight,
+            ai_analysis_enabled: config.ai_analysis_enabled,
+            review_violations: false,
+        };
+        let scorer = ConfidenceScorer::new(scoring_cfg);
+
+        let mut scored: Vec<(
+            SecurityReviewFinding,
+            crate::scanner::scoring::ScoringResult,
+        )> = parsed_findings
+            .into_iter()
+            .map(|f| {
+                let ai_score = Some(f.confidence);
+                let result = scorer.score(&f, ai_score);
+                (f, result)
+            })
+            .collect();
+
+        // AbsoluteViolation findings bypass the threshold; all others must meet it.
+        scored.retain(|(_, result)| {
+            result.has_violations() || result.blended_score >= config.confidence_threshold
+        });
 
         // Step 9: Filter by severity threshold.
-        findings = filter_by_severity(findings, &config.severity_threshold);
+        let min_severity = SecurityReviewFinding::parse_severity(&config.severity_threshold);
+        scored.retain(|(f, _)| f.severity >= min_severity);
 
         // Step 10: Cap findings at max_findings.
-        if config.max_findings > 0 && findings.len() > config.max_findings as usize {
-            findings.truncate(config.max_findings as usize);
+        if config.max_findings > 0 && scored.len() > config.max_findings as usize {
+            scored.truncate(config.max_findings as usize);
         }
 
         // Step 11: Compute risk band.
-        let risk_band = if findings.is_empty() {
+        let risk_band = if scored.is_empty() {
             None
         } else {
             let mut plugin_findings = PluginFindings::new();
-            for f in &findings {
-                plugin_findings.push(f.to_plugin_finding());
+            for (f, result) in &scored {
+                plugin_findings.push(f.to_plugin_finding().with_scoring(result));
             }
             plugin_findings.to_risk_band()
         };
+
+        // Build the pre-scored PluginFinding list for reports and output.
+        let plugin_findings_vec: Vec<PluginFinding> = scored
+            .iter()
+            .map(|(f, result)| f.to_plugin_finding().with_scoring(result))
+            .collect();
+
+        // Ref to SecurityReviewFinding slice for Markdown/SARIF reports.
+        let raw_findings: Vec<&SecurityReviewFinding> = scored.iter().map(|(f, _)| f).collect();
 
         // Step 12: Write reports.
         let workspace_id = ctx.workspace_id().to_string();
@@ -234,7 +272,10 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         let sarif_path = reports_dir.join("security_review.sarif");
 
         if let Err(e) = SecurityReviewMarkdownReport::write(
-            &findings,
+            &raw_findings
+                .iter()
+                .map(|f| (*f).clone())
+                .collect::<Vec<_>>(),
             &ctx.scan_result,
             &workspace_id,
             risk_band,
@@ -247,7 +288,7 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         }
 
         if let Err(e) = SecurityReviewJsonReport::write(
-            &findings,
+            &plugin_findings_vec,
             &ctx.scan_result,
             &workspace_id,
             &report_id,
@@ -261,7 +302,14 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         }
 
         if config.include_sarif
-            && let Err(e) = SecurityReviewSarifReport::write(&findings, &workspace_id, &sarif_path)
+            && let Err(e) = SecurityReviewSarifReport::write(
+                &raw_findings
+                    .iter()
+                    .map(|f| (*f).clone())
+                    .collect::<Vec<_>>(),
+                &workspace_id,
+                &sarif_path,
+            )
         {
             ctx.add_diagnostic(Diagnostic::warning(
                 DiagnosticCategory::Plugin,
@@ -270,13 +318,13 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         }
 
         // Step 13: Check fail_on_critical.
-        let has_critical = findings
+        let has_critical = scored
             .iter()
-            .any(|f| f.severity == FindingSeverity::Critical);
+            .any(|(f, _)| f.severity == FindingSeverity::Critical);
 
         let summary = format!(
             "security-review complete: {} finding(s), risk band: {}",
-            findings.len(),
+            scored.len(),
             risk_band.map(|b| b.as_str()).unwrap_or("none"),
         );
 
@@ -291,8 +339,8 @@ impl WorkflowPlugin for SecurityReviewPlugin {
 
         output.risk_band = risk_band;
 
-        for f in &findings {
-            output.add_finding(f.to_plugin_finding());
+        for pf in &plugin_findings_vec {
+            output.add_finding(pf.clone());
         }
 
         output.add_report_path("markdown", md_path.to_string_lossy().to_string());
@@ -306,7 +354,7 @@ impl WorkflowPlugin for SecurityReviewPlugin {
             output.add_written_file(sarif_path.to_string_lossy().to_string());
         }
 
-        output.set_score("finding_count", findings.len() as f64);
+        output.set_score("finding_count", scored.len() as f64);
 
         // Step 14: Return completed output.
         Ok(output)
@@ -455,20 +503,12 @@ fn extract_json(content: &str) -> &str {
     trimmed
 }
 
+#[cfg(test)]
 /// Filters findings to those at or above the minimum severity threshold.
 ///
 /// The threshold string is parsed with
 /// [`SecurityReviewFinding::parse_severity`]. Findings strictly below the
 /// threshold are discarded.
-///
-/// # Arguments
-///
-/// * `findings`  - The full finding list to filter.
-/// * `threshold` - Minimum severity as a string (e.g. `"medium"`).
-///
-/// # Returns
-///
-/// A new `Vec<SecurityReviewFinding>` containing only qualifying findings.
 fn filter_by_severity(
     findings: Vec<SecurityReviewFinding>,
     threshold: &str,
@@ -1088,6 +1128,140 @@ mod tests {
         assert!(
             output.completed,
             "fail_on_critical with only high findings must still succeed"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2 scoring integration tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_security_review_plugin_absolute_violation_finding_always_included() {
+        // A critical credential finding triggers AbsoluteViolation and must
+        // be included regardless of the confidence_threshold.
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"secrets_exposure\",\"severity\":\"critical\",",
+            "\"evidence\":\"Hardcoded API key found.\",",
+            "\"exploitability\":\"Trivially exploitable.\",",
+            "\"impact\":\"Full API access.\",",
+            "\"remediation\":\"Use environment variables.\",",
+            "\"confidence\":0.9}]}"
+        );
+        let mock = make_tool_calling_provider(finding_json);
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        // Set a very high confidence_threshold; the AbsoluteViolation must bypass it.
+        let cfg = SecurityReviewConfig {
+            confidence_threshold: 0.99,
+            ai_confidence_weight: 0.5,
+            ai_analysis_enabled: true,
+            ..SecurityReviewConfig::default()
+        };
+        let ctx = make_context(tmp.path().to_str().unwrap(), Some(cfg), provider);
+        // SAFETY: run() should not fail.
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
+        assert!(output.completed, "plugin must complete");
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "absolute violation finding must always be included despite high threshold"
+        );
+        // The blended confidence must be lower than the raw AI confidence (0.9).
+        assert!(
+            output.findings[0].confidence < 0.9,
+            "blended score must be lower than raw AI confidence for a violation finding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_review_plugin_ai_weight_shifts_blended_confidence() {
+        // Higher ai_confidence_weight must produce a blended score closer to
+        // the AI-reported confidence.
+        let tmp_low = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let tmp_high = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"injection\",\"severity\":\"high\",",
+            "\"evidence\":\"SQL injection found.\",",
+            "\"exploitability\":\"Easy.\",",
+            "\"impact\":\"Data leak.\",",
+            "\"remediation\":\"Use params.\",",
+            "\"confidence\":0.95}]}"
+        );
+        let mock1 = make_tool_calling_provider(finding_json);
+        let provider1: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock1);
+        let cfg_low_weight = SecurityReviewConfig {
+            ai_confidence_weight: 0.1,
+            confidence_threshold: 0.0, // include all findings
+            ..SecurityReviewConfig::default()
+        };
+        let ctx1 = make_context(
+            tmp_low.path().to_str().unwrap(),
+            Some(cfg_low_weight),
+            provider1,
+        );
+        // SAFETY: run() should not fail.
+        let out_low = SecurityReviewPlugin.run(ctx1).await.unwrap();
+
+        let mock2 = make_tool_calling_provider(finding_json);
+        let provider2: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock2);
+        let cfg_high_weight = SecurityReviewConfig {
+            ai_confidence_weight: 0.9,
+            confidence_threshold: 0.0, // include all findings
+            ..SecurityReviewConfig::default()
+        };
+        let ctx2 = make_context(
+            tmp_high.path().to_str().unwrap(),
+            Some(cfg_high_weight),
+            provider2,
+        );
+        // SAFETY: run() should not fail.
+        let out_high = SecurityReviewPlugin.run(ctx2).await.unwrap();
+
+        assert_eq!(out_low.findings.len(), 1);
+        assert_eq!(out_high.findings.len(), 1);
+        // Higher AI weight -> blended score closer to AI confidence (0.95).
+        assert!(
+            out_high.findings[0].confidence > out_low.findings[0].confidence,
+            "higher ai_confidence_weight must produce higher blended confidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_security_review_plugin_ai_disabled_blended_equals_static_score() {
+        // When ai_analysis_enabled = false, the output confidence must equal the
+        // static score, matching the behaviour of a run with no AI provider.
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"injection\",\"severity\":\"medium\",",
+            "\"evidence\":\"Input echoed without sanitisation.\",",
+            "\"exploitability\":\"Moderate.\",",
+            "\"impact\":\"XSS possible.\",",
+            "\"remediation\":\"Escape output.\",",
+            "\"confidence\":0.85}]}"
+        );
+        let mock = make_tool_calling_provider(finding_json);
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        let cfg = SecurityReviewConfig {
+            ai_analysis_enabled: false,
+            confidence_threshold: 0.0, // include all findings
+            ..SecurityReviewConfig::default()
+        };
+        let ctx = make_context(tmp.path().to_str().unwrap(), Some(cfg), provider);
+        // SAFETY: run() should not fail.
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
+        assert!(output.completed, "plugin must complete");
+        assert_eq!(output.findings.len(), 1);
+        // ai_score must not be surfaced when AI analysis is disabled.
+        assert!(
+            output.findings[0].ai_score.is_none(),
+            "ai_score must be None when ai_analysis_enabled = false"
+        );
+        // Blended score equals static score (no AI input).
+        let blended = output.findings[0].confidence;
+        let static_s = output.findings[0].static_score;
+        assert!(
+            (blended - static_s).abs() < 1e-9,
+            "blended must equal static when AI is disabled"
         );
     }
 }

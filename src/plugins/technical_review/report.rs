@@ -18,6 +18,7 @@ use chrono::Utc;
 
 use crate::error::{PipelineError, Result};
 use crate::reports::envelope::ReportEnvelope;
+use crate::reports::findings::PluginFinding;
 use crate::reports::formatter::validate_report_path;
 use crate::reports::risk_band::RiskBand;
 use crate::scanner::findings::FindingSeverity;
@@ -326,17 +327,22 @@ impl TechnicalReviewMarkdownReport {
 /// Writes technical review findings as a JSON report using the shared
 /// [`ReportEnvelope`] format.
 ///
-/// Each [`TechnicalReviewFinding`] is converted to a [`crate::reports::findings::PluginFinding`]
-/// via [`TechnicalReviewFinding::to_plugin_finding`] before being added to the
-/// envelope.
+/// Each [`PluginFinding`] is written directly into the envelope, preserving
+/// the blended `confidence` score and the `static_score` / `ai_score` audit
+/// fields set by the confidence scorer.
 pub struct TechnicalReviewJsonReport;
 
 impl TechnicalReviewJsonReport {
-    /// Converts findings to a [`ReportEnvelope`] and writes it as JSON to `path`.
+    /// Writes a scored findings slice as a JSON [`ReportEnvelope`] to `path`.
+    ///
+    /// The caller is responsible for building each [`PluginFinding`] with
+    /// scoring audit data (via
+    /// [`PluginFinding::with_scoring`][crate::reports::findings::PluginFinding::with_scoring])
+    /// before passing the slice here.
     ///
     /// # Arguments
     ///
-    /// * `findings`     - Slice of [`TechnicalReviewFinding`] to include.
+    /// * `findings`     - Pre-built [`PluginFinding`] slice with scoring data.
     /// * `scan_result`  - Repository scan metadata for provenance.
     /// * `workspace_id` - Workspace identifier.
     /// * `report_id`    - Unique report identifier (e.g. a ULID string).
@@ -347,16 +353,8 @@ impl TechnicalReviewJsonReport {
     ///
     /// Returns [`PipelineError::Report`] if the path is invalid or
     /// serialization fails, or [`PipelineError::Io`] for I/O errors.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use std::path::Path;
-    /// use xzardgz::plugins::technical_review::report::TechnicalReviewJsonReport;
-    /// // TechnicalReviewJsonReport::write(&[], &scan, "ws-001", "r-001", None, Path::new("/tmp/out.json")).unwrap();
-    /// ```
     pub fn write(
-        findings: &[TechnicalReviewFinding],
+        findings: &[PluginFinding],
         scan_result: &ScanResult,
         workspace_id: &str,
         report_id: &str,
@@ -372,7 +370,7 @@ impl TechnicalReviewJsonReport {
         envelope.risk_band = risk_band;
 
         for finding in findings {
-            envelope.findings.push(finding.to_plugin_finding());
+            envelope.findings.push(finding.clone());
         }
 
         envelope.write_to_file(path)
@@ -691,10 +689,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("technical_review.json");
         let scan = minimal_scan();
-        let f = make_finding("architecture", FindingSeverity::High);
+        let pf = make_finding("architecture", FindingSeverity::High).to_plugin_finding();
 
         TechnicalReviewJsonReport::write(
-            &[f],
+            &[pf],
             &scan,
             "ws-001",
             "r-001",

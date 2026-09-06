@@ -20,6 +20,7 @@ use chrono::Utc;
 
 use crate::error::{PipelineError, Result};
 use crate::reports::envelope::ReportEnvelope;
+use crate::reports::findings::PluginFinding;
 use crate::reports::formatter::validate_report_path;
 use crate::reports::risk_band::RiskBand;
 use crate::reports::sarif::{
@@ -350,18 +351,22 @@ impl SecurityReviewMarkdownReport {
 /// Writes security review findings as a JSON report using the shared
 /// [`ReportEnvelope`] format.
 ///
-/// Each [`SecurityReviewFinding`] is converted to a
-/// [`crate::reports::findings::PluginFinding`] via
-/// [`SecurityReviewFinding::to_plugin_finding`] before being added to the
-/// envelope.
+/// Each [`PluginFinding`] is written directly into the envelope, preserving
+/// the blended `confidence` score and the `static_score` / `ai_score` audit
+/// fields set by the confidence scorer.
 pub struct SecurityReviewJsonReport;
 
 impl SecurityReviewJsonReport {
-    /// Converts findings to a [`ReportEnvelope`] and writes it as JSON to `path`.
+    /// Writes a scored findings slice as a JSON [`ReportEnvelope`] to `path`.
+    ///
+    /// The caller is responsible for building each [`PluginFinding`] with
+    /// scoring audit data (via
+    /// [`PluginFinding::with_scoring`][crate::reports::findings::PluginFinding::with_scoring])
+    /// before passing the slice here.
     ///
     /// # Arguments
     ///
-    /// * `findings`     - Slice of [`SecurityReviewFinding`] to serialize.
+    /// * `findings`     - Pre-built [`PluginFinding`] slice with scoring data.
     /// * `scan_result`  - Scan metadata for provenance fields.
     /// * `workspace_id` - Workspace identifier.
     /// * `report_id`    - Unique report identifier (ULID or UUID string).
@@ -373,7 +378,7 @@ impl SecurityReviewJsonReport {
     /// Returns [`PipelineError::Report`] if serialization fails, or
     /// [`PipelineError::Io`] for I/O errors.
     pub fn write(
-        findings: &[SecurityReviewFinding],
+        findings: &[PluginFinding],
         scan_result: &ScanResult,
         workspace_id: &str,
         report_id: &str,
@@ -387,7 +392,7 @@ impl SecurityReviewJsonReport {
         envelope.risk_band = risk_band;
 
         for finding in findings {
-            envelope.findings.push(finding.to_plugin_finding());
+            envelope.findings.push(finding.clone());
         }
 
         envelope.write_to_file(path)
@@ -728,8 +733,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("security_review.json");
         let scan = minimal_scan();
-        let f = make_finding();
-        SecurityReviewJsonReport::write(&[f], &scan, "ws-001", "r-001", None, &path).unwrap();
+        let pf = make_finding().to_plugin_finding();
+        SecurityReviewJsonReport::write(&[pf], &scan, "ws-001", "r-001", None, &path).unwrap();
         // SAFETY: we just wrote this file.
         let content = std::fs::read_to_string(&path).unwrap();
         // SAFETY: content is valid JSON written by serde_json.

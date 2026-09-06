@@ -33,7 +33,8 @@ use crate::error::Result;
 use crate::plugins::context::{PluginContext, ToolAccessLevel};
 use crate::plugins::output::PluginOutput;
 use crate::plugins::trait_def::{PluginMetadata, WorkflowPlugin};
-use crate::reports::findings::PluginFindings;
+use crate::reports::findings::{PluginFinding, PluginFindings};
+use crate::scanner::scoring::{ConfidenceScorer, ScoringConfig};
 
 use super::config::validate_technical_review_config;
 use super::dimensions::ReviewDimension;
@@ -179,29 +180,63 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         };
 
         // Step 7: Parse findings from the response.
-        let mut findings = parse_ai_response(&response_content, &dimensions);
+        let parsed_findings = parse_ai_response(&response_content, &dimensions);
 
-        // Filter by confidence threshold.
-        findings.retain(|f| f.confidence >= config.confidence_threshold);
+        // Step 8: Score each finding and filter by blended confidence.
+        let scoring_cfg = ScoringConfig {
+            ai_confidence_weight: config.ai_confidence_weight,
+            ai_analysis_enabled: config.ai_analysis_enabled,
+            review_violations: false,
+        };
+        let scorer = ConfidenceScorer::new(scoring_cfg);
 
-        // Step 8: Filter by severity threshold.
-        findings = filter_by_severity(findings, &config.severity_threshold);
+        let mut scored: Vec<(
+            TechnicalReviewFinding,
+            crate::scanner::scoring::ScoringResult,
+        )> = parsed_findings
+            .into_iter()
+            .map(|f| {
+                let ai_score = Some(f.confidence);
+                let result = scorer.score(&f, ai_score);
+                (f, result)
+            })
+            .collect();
 
-        // Step 9: Cap findings at max_findings.
-        if config.max_findings > 0 && findings.len() > config.max_findings as usize {
-            findings.truncate(config.max_findings as usize);
+        // AbsoluteViolation findings bypass the threshold; all others must meet it.
+        scored.retain(|(_, result)| {
+            result.has_violations() || result.blended_score >= config.confidence_threshold
+        });
+
+        // Step 9 (originally "Filter by confidence threshold"):
+        // Filter by severity threshold.
+        let min_severity = TechnicalReviewFinding::parse_severity(&config.severity_threshold);
+        scored.retain(|(f, _)| f.severity >= min_severity);
+
+        // Step 10: Cap findings at max_findings.
+        if config.max_findings > 0 && scored.len() > config.max_findings as usize {
+            scored.truncate(config.max_findings as usize);
         }
 
         // Step 10: Compute risk band.
-        let risk_band = if findings.is_empty() {
+        let risk_band = if scored.is_empty() {
             None
         } else {
             let mut plugin_findings = PluginFindings::new();
-            for f in &findings {
-                plugin_findings.push(f.to_plugin_finding());
+            for (f, result) in &scored {
+                plugin_findings.push(f.to_plugin_finding().with_scoring(result));
             }
             plugin_findings.to_risk_band()
         };
+
+        // Build pre-scored PluginFinding list for output and JSON report.
+        let plugin_findings_vec: Vec<PluginFinding> = scored
+            .iter()
+            .map(|(f, result)| f.to_plugin_finding().with_scoring(result))
+            .collect();
+
+        // Raw findings for Markdown report.
+        let raw_findings: Vec<TechnicalReviewFinding> =
+            scored.iter().map(|(f, _)| f.clone()).collect();
 
         // Step 11: Write reports.
         let workspace_id = ctx.workspace_id().to_string();
@@ -213,7 +248,7 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         let json_path = reports_dir.join("technical_review.json");
 
         if let Err(e) = TechnicalReviewMarkdownReport::write(
-            &findings,
+            &raw_findings,
             &ctx.scan_result,
             &workspace_id,
             risk_band,
@@ -226,7 +261,7 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         }
 
         if let Err(e) = TechnicalReviewJsonReport::write(
-            &findings,
+            &plugin_findings_vec,
             &ctx.scan_result,
             &workspace_id,
             &report_id,
@@ -242,15 +277,15 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         // Step 12: Build and return PluginOutput.
         let summary = format!(
             "technical-review complete: {} finding(s), risk band: {}",
-            findings.len(),
+            scored.len(),
             risk_band.map(|b| b.as_str()).unwrap_or("none"),
         );
 
         let mut output = PluginOutput::success(summary);
         output.risk_band = risk_band;
 
-        for f in &findings {
-            output.add_finding(f.to_plugin_finding());
+        for pf in &plugin_findings_vec {
+            output.add_finding(pf.clone());
         }
 
         output.add_report_path("markdown", md_path.to_string_lossy().to_string());
@@ -258,7 +293,7 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         output.add_written_file(md_path.to_string_lossy().to_string());
         output.add_written_file(json_path.to_string_lossy().to_string());
 
-        output.set_score("finding_count", findings.len() as f64);
+        output.set_score("finding_count", scored.len() as f64);
 
         Ok(output)
     }
@@ -380,6 +415,7 @@ fn extract_json(content: &str) -> &str {
     trimmed
 }
 
+#[cfg(test)]
 /// Filters findings to those at or above the minimum severity threshold.
 ///
 /// Parses the threshold string using [`TechnicalReviewFinding::parse_severity`]
@@ -402,7 +438,7 @@ fn filter_by_severity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, GovernanceConfig};
+    use crate::config::{Config, GovernanceConfig, TechnicalReviewConfig};
     use crate::error::PipelineError;
     use crate::governance::GovernanceChecker;
     use crate::plugins::context::PluginContext;
@@ -454,11 +490,27 @@ mod tests {
         scan: ScanResult,
         provider: Arc<dyn crate::providers::base::Provider + Send + Sync>,
     ) -> PluginContext {
+        make_context_with_config(root, scan, None, provider)
+    }
+
+    /// Builds a [`PluginContext`] with an optional [`TechnicalReviewConfig`] override.
+    ///
+    /// When `config_override` is `None`, [`TechnicalReviewConfig::default`] is used.
+    fn make_context_with_config(
+        root: &str,
+        scan: ScanResult,
+        config_override: Option<TechnicalReviewConfig>,
+        provider: Arc<dyn crate::providers::base::Provider + Send + Sync>,
+    ) -> PluginContext {
         // SAFETY: WorkspaceManager::create only fails on I/O errors; temp dirs are writable.
         let manager = WorkspaceManager::create(root, "test://repo", None, None).unwrap();
         let state = manager.state.clone();
         let workspace = Arc::new(manager);
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        if let Some(tech_cfg) = config_override {
+            config.technical_review = tech_cfg;
+        }
+        let config = Arc::new(config);
         let tool_registry = ToolRegistry::new();
         let governance_cfg = GovernanceConfig {
             enabled: false,
@@ -764,7 +816,18 @@ mod tests {
         );
         let mock = make_tool_calling_provider(finding_json);
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-        let ctx = make_context(tmp.path().to_str().unwrap(), empty_scan(), provider);
+        // confidence_threshold = 0.0 so the test verifies end-to-end finding
+        // processing rather than the threshold filter (tested separately).
+        let cfg = TechnicalReviewConfig {
+            confidence_threshold: 0.0,
+            ..TechnicalReviewConfig::default()
+        };
+        let ctx = make_context_with_config(
+            tmp.path().to_str().unwrap(),
+            empty_scan(),
+            Some(cfg),
+            provider,
+        );
         let output = TechnicalReviewPlugin.run(ctx).await.unwrap();
         assert!(output.completed, "plugin must report completed");
         assert_eq!(output.findings.len(), 1, "should have one finding");
@@ -940,6 +1003,153 @@ mod tests {
                 .flatten()
                 .any(|p| p.ends_with("technical_review.json")),
             "output must include json report path"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2 scoring integration tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_technical_review_plugin_absolute_violation_finding_always_included() {
+        // A critical dependency finding triggers AbsoluteViolation and must
+        // be included regardless of the confidence_threshold.
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"dependency_hygiene\",\"severity\":\"critical\",",
+            "\"file\":null,\"line\":null,\"symbol\":null,",
+            "\"evidence\":\"Vulnerable dependency with known CVE.\",",
+            "\"impact\":\"Remote code execution risk.\",",
+            "\"recommendation\":\"Upgrade to a patched version.\",",
+            "\"confidence\":0.9,\"related_files\":[],\"references\":[]}]}"
+        );
+        let mock = make_tool_calling_provider(finding_json);
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        // Set a very high confidence_threshold; the AbsoluteViolation must bypass it.
+        let cfg = TechnicalReviewConfig {
+            confidence_threshold: 0.99,
+            ai_confidence_weight: 0.5,
+            ai_analysis_enabled: true,
+            ..TechnicalReviewConfig::default()
+        };
+        let ctx = make_context_with_config(
+            tmp.path().to_str().unwrap(),
+            empty_scan(),
+            Some(cfg),
+            provider,
+        );
+        // SAFETY: run() should not fail.
+        let output = TechnicalReviewPlugin.run(ctx).await.unwrap();
+        assert!(output.completed, "plugin must complete");
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "absolute violation finding must always be included despite high threshold"
+        );
+        // The blended confidence must be lower than the raw AI confidence (0.9),
+        // because the AbsoluteViolation floors the static score to 0.0.
+        assert!(
+            output.findings[0].confidence < 0.9,
+            "blended score must be lower than raw AI confidence for a violation finding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_technical_review_plugin_ai_weight_shifts_blended_confidence() {
+        // Higher ai_confidence_weight must produce a blended score closer to
+        // the AI-reported confidence.
+        let tmp_low = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let tmp_high = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"architecture\",\"severity\":\"high\",",
+            "\"file\":null,\"line\":null,\"symbol\":null,",
+            "\"evidence\":\"Tight coupling between modules.\",",
+            "\"impact\":\"Reduced testability and maintainability.\",",
+            "\"recommendation\":\"Introduce dependency inversion.\",",
+            "\"confidence\":0.95,\"related_files\":[],\"references\":[]}]}"
+        );
+        let mock1 = make_tool_calling_provider(finding_json);
+        let provider1: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock1);
+        let cfg_low_weight = TechnicalReviewConfig {
+            ai_confidence_weight: 0.1,
+            confidence_threshold: 0.0, // include all findings
+            ..TechnicalReviewConfig::default()
+        };
+        let ctx1 = make_context_with_config(
+            tmp_low.path().to_str().unwrap(),
+            empty_scan(),
+            Some(cfg_low_weight),
+            provider1,
+        );
+        // SAFETY: run() should not fail.
+        let out_low = TechnicalReviewPlugin.run(ctx1).await.unwrap();
+
+        let mock2 = make_tool_calling_provider(finding_json);
+        let provider2: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock2);
+        let cfg_high_weight = TechnicalReviewConfig {
+            ai_confidence_weight: 0.9,
+            confidence_threshold: 0.0, // include all findings
+            ..TechnicalReviewConfig::default()
+        };
+        let ctx2 = make_context_with_config(
+            tmp_high.path().to_str().unwrap(),
+            empty_scan(),
+            Some(cfg_high_weight),
+            provider2,
+        );
+        // SAFETY: run() should not fail.
+        let out_high = TechnicalReviewPlugin.run(ctx2).await.unwrap();
+
+        assert_eq!(out_low.findings.len(), 1);
+        assert_eq!(out_high.findings.len(), 1);
+        // Higher AI weight -> blended score closer to AI confidence (0.95).
+        assert!(
+            out_high.findings[0].confidence > out_low.findings[0].confidence,
+            "higher ai_confidence_weight must produce higher blended confidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_technical_review_plugin_ai_disabled_blended_equals_static_score() {
+        // When ai_analysis_enabled = false, the output confidence must equal
+        // the static score, matching the behaviour of a run with no AI provider.
+        let tmp = tempfile::TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let finding_json = concat!(
+            "{\"findings\":[{\"category\":\"architecture\",\"severity\":\"medium\",",
+            "\"file\":null,\"line\":null,\"symbol\":null,",
+            "\"evidence\":\"Code style inconsistency across modules.\",",
+            "\"impact\":\"Reduced readability.\",",
+            "\"recommendation\":\"Apply consistent formatting.\",",
+            "\"confidence\":0.85,\"related_files\":[],\"references\":[]}]}"
+        );
+        let mock = make_tool_calling_provider(finding_json);
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
+        let cfg = TechnicalReviewConfig {
+            ai_analysis_enabled: false,
+            confidence_threshold: 0.0, // include all findings
+            ..TechnicalReviewConfig::default()
+        };
+        let ctx = make_context_with_config(
+            tmp.path().to_str().unwrap(),
+            empty_scan(),
+            Some(cfg),
+            provider,
+        );
+        // SAFETY: run() should not fail.
+        let output = TechnicalReviewPlugin.run(ctx).await.unwrap();
+        assert!(output.completed, "plugin must complete");
+        assert_eq!(output.findings.len(), 1);
+        // ai_score must not be surfaced when AI analysis is disabled.
+        assert!(
+            output.findings[0].ai_score.is_none(),
+            "ai_score must be None when ai_analysis_enabled = false"
+        );
+        // Blended score equals static score (no AI input).
+        let blended = output.findings[0].confidence;
+        let static_s = output.findings[0].static_score;
+        assert!(
+            (blended - static_s).abs() < 1e-9,
+            "blended must equal static when AI is disabled"
         );
     }
 

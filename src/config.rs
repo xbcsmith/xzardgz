@@ -601,10 +601,31 @@ pub struct TechnicalReviewConfig {
     /// Maximum number of agent turns allowed in the AI analysis loop.
     #[serde(default = "default_agent_max_turns")]
     pub agent_max_turns: u32,
+    /// Weight of the AI confidence score in the final blended confidence
+    /// computation.  Clamped to `[0.0, 1.0]` at use time.
+    ///
+    /// Default: `0.5`.
+    #[serde(default = "default_ai_confidence_weight")]
+    pub ai_confidence_weight: f64,
+    /// Master switch for the AI confidence blend step.
+    ///
+    /// When `false`, only the static signal score is used to gate findings;
+    /// the AI's self-reported confidence value is ignored entirely.  Setting
+    /// this to `false` produces identical filtering behaviour to a pipeline
+    /// configured with no AI provider.
+    ///
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub ai_analysis_enabled: bool,
 }
 
 fn default_agent_max_turns() -> u32 {
     15
+}
+
+/// Default AI confidence weight shared by both review plugin configurations.
+fn default_ai_confidence_weight() -> f64 {
+    0.5
 }
 
 fn default_true() -> bool {
@@ -656,6 +677,8 @@ impl Default for TechnicalReviewConfig {
             focus_areas: vec![],
             report_formats: default_report_formats(),
             agent_max_turns: default_agent_max_turns(),
+            ai_confidence_weight: default_ai_confidence_weight(),
+            ai_analysis_enabled: default_true(),
         }
     }
 }
@@ -762,6 +785,22 @@ pub struct SecurityReviewConfig {
     /// Maximum number of agent turns allowed in the AI analysis loop.
     #[serde(default = "default_sec_agent_max_turns")]
     pub agent_max_turns: u32,
+    /// Weight of the AI confidence score in the final blended confidence
+    /// computation.  Clamped to `[0.0, 1.0]` at use time.
+    ///
+    /// Default: `0.5`.
+    #[serde(default = "default_ai_confidence_weight")]
+    pub ai_confidence_weight: f64,
+    /// Master switch for the AI confidence blend step.
+    ///
+    /// When `false`, only the static signal score is used to gate findings;
+    /// the AI's self-reported confidence value is ignored entirely.  Setting
+    /// this to `false` produces identical filtering behaviour to a pipeline
+    /// configured with no AI provider.
+    ///
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub ai_analysis_enabled: bool,
 }
 
 /// Default maximum agent turns for security review.
@@ -792,6 +831,8 @@ impl Default for SecurityReviewConfig {
             verification_turns: default_sec_verification_turns(),
             confidence_threshold: default_sec_confidence_threshold(),
             agent_max_turns: default_sec_agent_max_turns(),
+            ai_confidence_weight: default_ai_confidence_weight(),
+            ai_analysis_enabled: default_true(),
         }
     }
 }

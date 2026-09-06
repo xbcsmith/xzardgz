@@ -444,12 +444,93 @@ impl TechnicalReviewFinding {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for ScoringInput
+// ---------------------------------------------------------------------------
+
+/// Returns the [`Negative`][crate::scanner::scoring::ScoringSignal::Negative]
+/// signal weight for a given [`FindingSeverity`].
+///
+/// Weights are calibrated so that higher severities produce proportionally
+/// larger deductions from the baseline confidence score.
+fn severity_to_tech_negative_weight(severity: FindingSeverity) -> f64 {
+    match severity {
+        FindingSeverity::Info => 0.1,
+        FindingSeverity::Low => 0.2,
+        FindingSeverity::Medium => 0.4,
+        FindingSeverity::High => 0.6,
+        FindingSeverity::Critical => 0.8,
+    }
+}
+
+/// Returns `true` when the category string describes a dependency or
+/// supply-chain dimension, which triggers an
+/// [`AbsoluteViolation`][crate::scanner::scoring::ScoringSignal::AbsoluteViolation]
+/// signal for `Critical`-severity findings.
+fn is_critical_dependency_category(category: &str) -> bool {
+    let lower = category.to_lowercase();
+    lower.contains("dependency") || lower.contains("supply_chain")
+}
+
+// ---------------------------------------------------------------------------
+// ScoringInput
+// ---------------------------------------------------------------------------
+
+impl crate::scanner::scoring::ScoringInput for TechnicalReviewFinding {
+    /// Returns the ordered scoring signals for this finding.
+    ///
+    /// Always emits one [`ScoringSignal::Negative`][crate::scanner::scoring::ScoringSignal::Negative]
+    /// whose weight is proportional to the finding's severity.  For
+    /// `Critical`-severity findings whose category identifies a
+    /// dependency or supply-chain dimension (contains `"dependency"` or
+    /// `"supply_chain"`), also emits a
+    /// [`ScoringSignal::AbsoluteViolation`][crate::scanner::scoring::ScoringSignal::AbsoluteViolation].
+    fn signals(&self) -> Vec<crate::scanner::scoring::ScoringSignal> {
+        let mut signals = Vec::new();
+
+        signals.push(crate::scanner::scoring::ScoringSignal::Negative {
+            label: format!("severity_{}", self.severity.as_str()),
+            weight: severity_to_tech_negative_weight(self.severity),
+        });
+
+        if self.severity == FindingSeverity::Critical
+            && is_critical_dependency_category(&self.category)
+        {
+            signals.push(crate::scanner::scoring::ScoringSignal::AbsoluteViolation {
+                reason: format!(
+                    "critical dependency violation in category '{}'",
+                    self.category
+                ),
+            });
+        }
+
+        signals
+    }
+
+    /// Returns a human-readable context string for AI prompt construction.
+    fn context_for_ai(&self) -> String {
+        format!(
+            "Category: {}\nSeverity: {}\nEvidence: {}\nImpact: {}",
+            self.category,
+            self.severity.as_str(),
+            self.evidence,
+            self.impact,
+        )
+    }
+
+    /// Returns the plugin identifier.
+    fn plugin_name(&self) -> &str {
+        "technical_review"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::scoring::ScoringInput;
 
     fn make_finding() -> TechnicalReviewFinding {
         TechnicalReviewFinding::new(
@@ -863,5 +944,123 @@ mod tests {
         assert_eq!(restored.severity, f.severity);
         assert_eq!(restored.file, f.file);
         assert_eq!(restored.symbol, f.symbol);
+    }
+
+    // -------  ScoringInput -------
+
+    #[test]
+    fn test_tech_scoring_input_signals_info_severity_emits_small_negative() {
+        let f =
+            TechnicalReviewFinding::new("architecture", FindingSeverity::Info, "e", "i", "r", 0.5);
+        let signals = f.signals();
+        assert_eq!(signals.len(), 1);
+        match &signals[0] {
+            crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => {
+                assert!((weight - 0.1).abs() < 1e-9);
+            }
+            _ => panic!("expected Negative"),
+        }
+    }
+
+    #[test]
+    fn test_tech_scoring_input_signals_critical_non_dependency_emits_single_negative() {
+        let f = TechnicalReviewFinding::new(
+            "architecture",
+            FindingSeverity::Critical,
+            "e",
+            "i",
+            "r",
+            0.9,
+        );
+        let signals = f.signals();
+        assert_eq!(signals.len(), 1);
+        match &signals[0] {
+            crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => {
+                assert!((weight - 0.8).abs() < 1e-9);
+            }
+            _ => panic!("expected Negative"),
+        }
+    }
+
+    #[test]
+    fn test_tech_scoring_input_signals_critical_dependency_hygiene_emits_violation() {
+        let f = TechnicalReviewFinding::new(
+            "dependency_hygiene",
+            FindingSeverity::Critical,
+            "e",
+            "i",
+            "r",
+            0.9,
+        );
+        let signals = f.signals();
+        assert_eq!(signals.len(), 2, "must have Negative + AbsoluteViolation");
+        assert!(signals[1].is_absolute_violation());
+    }
+
+    #[test]
+    fn test_tech_scoring_input_signals_critical_supply_chain_emits_violation() {
+        let f = TechnicalReviewFinding::new(
+            "supply_chain",
+            FindingSeverity::Critical,
+            "e",
+            "i",
+            "r",
+            0.9,
+        );
+        let signals = f.signals();
+        assert!(signals.iter().any(|s| s.is_absolute_violation()));
+    }
+
+    #[test]
+    fn test_tech_scoring_input_plugin_name_is_technical_review() {
+        let f = TechnicalReviewFinding::new("cat", FindingSeverity::Low, "e", "i", "r", 0.5);
+        use crate::scanner::scoring::ScoringInput;
+        assert_eq!(f.plugin_name(), "technical_review");
+    }
+
+    #[test]
+    fn test_tech_scoring_input_context_for_ai_contains_category_and_evidence() {
+        let f = TechnicalReviewFinding::new(
+            "error_handling",
+            FindingSeverity::High,
+            "Errors silently discarded.",
+            "Bugs go undetected.",
+            "Use ? operator.",
+            0.8,
+        );
+        use crate::scanner::scoring::ScoringInput;
+        let ctx = f.context_for_ai();
+        assert!(ctx.contains("error_handling"));
+        assert!(ctx.contains("Errors silently discarded."));
+    }
+
+    #[test]
+    fn test_tech_scoring_input_severity_weights_are_monotonically_increasing() {
+        use crate::scanner::scoring::ScoringInput;
+        let weights: Vec<f64> = [
+            FindingSeverity::Info,
+            FindingSeverity::Low,
+            FindingSeverity::Medium,
+            FindingSeverity::High,
+            FindingSeverity::Critical,
+        ]
+        .iter()
+        .map(|&sev| {
+            let f = TechnicalReviewFinding::new("cat", sev, "e", "i", "r", 0.5);
+            match f.signals().into_iter().next().unwrap() {
+                crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => weight,
+                _ => panic!("expected Negative"),
+            }
+        })
+        .collect();
+
+        for i in 1..weights.len() {
+            assert!(
+                weights[i] > weights[i - 1],
+                "weight at index {} must exceed weight at {}",
+                i,
+                i - 1
+            );
+        }
     }
 }

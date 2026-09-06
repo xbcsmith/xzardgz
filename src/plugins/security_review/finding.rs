@@ -639,12 +639,94 @@ impl SecurityReviewFinding {
 }
 
 // ---------------------------------------------------------------------------
+// ScoringInput helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the Negative signal weight for a given severity.
+///
+/// Weights are calibrated so that higher severities produce larger
+/// proportional deductions from the baseline confidence score.
+fn severity_to_negative_weight(severity: FindingSeverity) -> f64 {
+    match severity {
+        FindingSeverity::Info => 0.1,
+        FindingSeverity::Low => 0.2,
+        FindingSeverity::Medium => 0.4,
+        FindingSeverity::High => 0.6,
+        FindingSeverity::Critical => 0.8,
+    }
+}
+
+/// Returns `true` when the category string describes a credential or secret
+/// exposure, which triggers an [`crate::scanner::scoring::ScoringSignal::AbsoluteViolation`]
+/// signal for Critical-severity findings.
+fn is_credential_category(category: &str) -> bool {
+    let lower = category.to_lowercase();
+    lower.contains("secret")
+        || lower.contains("credential")
+        || lower.contains("hardcoded")
+        || lower.contains("api_key")
+        || lower.contains("password")
+}
+
+// ---------------------------------------------------------------------------
+// ScoringInput
+// ---------------------------------------------------------------------------
+
+impl crate::scanner::scoring::ScoringInput for SecurityReviewFinding {
+    /// Returns the ordered scoring signals for this finding.
+    ///
+    /// Always emits one [`crate::scanner::scoring::ScoringSignal::Negative`]
+    /// whose weight is proportional to the finding's severity.  Additionally
+    /// emits a [`crate::scanner::scoring::ScoringSignal::AbsoluteViolation`]
+    /// when the finding is `Critical` severity AND the category identifies a
+    /// credential-exposure condition (contains `"secret"`, `"credential"`,
+    /// `"hardcoded"`, `"api_key"`, or `"password"`).
+    fn signals(&self) -> Vec<crate::scanner::scoring::ScoringSignal> {
+        let mut signals = Vec::new();
+
+        signals.push(crate::scanner::scoring::ScoringSignal::Negative {
+            label: format!("severity_{}", self.severity.as_str()),
+            weight: severity_to_negative_weight(self.severity),
+        });
+
+        if self.severity == FindingSeverity::Critical && is_credential_category(&self.category) {
+            signals.push(crate::scanner::scoring::ScoringSignal::AbsoluteViolation {
+                reason: format!(
+                    "critical credential exposure detected in category '{}'",
+                    self.category
+                ),
+            });
+        }
+
+        signals
+    }
+
+    /// Returns a human-readable context string for AI prompt construction.
+    fn context_for_ai(&self) -> String {
+        format!(
+            "Category: {}\nSeverity: {}\nEvidence: {}\nExploitability: {}\nImpact: {}",
+            self.category,
+            self.severity.as_str(),
+            self.evidence,
+            self.exploitability,
+            self.impact,
+        )
+    }
+
+    /// Returns the plugin identifier.
+    fn plugin_name(&self) -> &str {
+        "security_review"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::scoring::ScoringInput;
 
     fn make_finding() -> SecurityReviewFinding {
         SecurityReviewFinding::new(
@@ -1077,5 +1159,129 @@ mod tests {
         assert_eq!(restored.cwe, f.cwe);
         assert_eq!(restored.owasp, f.owasp);
         assert_eq!(restored.sarif_rule_id, f.sarif_rule_id);
+    }
+
+    // -------  ScoringInput -------
+
+    #[test]
+    fn test_scoring_input_signals_info_severity_emits_small_negative() {
+        let _f = make_finding();
+        // make_finding uses High by default — build an Info one
+        let f = SecurityReviewFinding::new("xss", FindingSeverity::Info, "e", "exp", "i", "r", 0.5);
+        let signals = f.signals();
+        assert_eq!(signals.len(), 1);
+        match &signals[0] {
+            crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => {
+                assert!((weight - 0.1).abs() < 1e-9);
+            }
+            _ => panic!("expected Negative signal"),
+        }
+    }
+
+    #[test]
+    fn test_scoring_input_signals_critical_non_credential_emits_single_negative() {
+        let f = SecurityReviewFinding::new(
+            "injection",
+            FindingSeverity::Critical,
+            "e",
+            "exp",
+            "i",
+            "r",
+            0.9,
+        );
+        let signals = f.signals();
+        // No AbsoluteViolation because category != credential
+        assert_eq!(signals.len(), 1);
+        match &signals[0] {
+            crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => {
+                assert!((weight - 0.8).abs() < 1e-9);
+            }
+            _ => panic!("expected Negative signal"),
+        }
+    }
+
+    #[test]
+    fn test_scoring_input_signals_critical_secrets_exposure_emits_violation() {
+        let f = SecurityReviewFinding::new(
+            "secrets_exposure",
+            FindingSeverity::Critical,
+            "Hardcoded API key found.",
+            "Trivial.",
+            "Full access.",
+            "Use env vars.",
+            0.95,
+        );
+        let signals = f.signals();
+        assert_eq!(signals.len(), 2, "must have Negative + AbsoluteViolation");
+        assert!(signals[1].is_absolute_violation());
+    }
+
+    #[test]
+    fn test_scoring_input_signals_critical_credential_category_emits_violation() {
+        let f = SecurityReviewFinding::new(
+            "hardcoded_credential",
+            FindingSeverity::Critical,
+            "e",
+            "exp",
+            "i",
+            "r",
+            0.9,
+        );
+        let signals = f.signals();
+        assert!(signals.iter().any(|s| s.is_absolute_violation()));
+    }
+
+    #[test]
+    fn test_scoring_input_plugin_name_is_security_review() {
+        let f = make_finding();
+        use crate::scanner::scoring::ScoringInput;
+        assert_eq!(f.plugin_name(), "security_review");
+    }
+
+    #[test]
+    fn test_scoring_input_context_for_ai_contains_category_and_evidence() {
+        let f = SecurityReviewFinding::new(
+            "sql_injection",
+            FindingSeverity::High,
+            "Raw user input in SQL.",
+            "Easy.",
+            "Data loss.",
+            "Use params.",
+            0.9,
+        );
+        use crate::scanner::scoring::ScoringInput;
+        let ctx = f.context_for_ai();
+        assert!(ctx.contains("sql_injection"));
+        assert!(ctx.contains("Raw user input in SQL."));
+    }
+
+    #[test]
+    fn test_scoring_input_severity_weights_are_monotonically_increasing() {
+        use crate::scanner::scoring::ScoringInput;
+        let weights: Vec<f64> = [
+            FindingSeverity::Info,
+            FindingSeverity::Low,
+            FindingSeverity::Medium,
+            FindingSeverity::High,
+            FindingSeverity::Critical,
+        ]
+        .iter()
+        .map(|&sev| {
+            let f = SecurityReviewFinding::new("cat", sev, "e", "exp", "i", "r", 0.5);
+            match f.signals().into_iter().next().unwrap() {
+                crate::scanner::scoring::ScoringSignal::Negative { weight, .. } => weight,
+                _ => panic!("expected Negative"),
+            }
+        })
+        .collect();
+
+        for i in 1..weights.len() {
+            assert!(
+                weights[i] > weights[i - 1],
+                "weight for severity {} must exceed severity {}",
+                i,
+                i - 1
+            );
+        }
     }
 }

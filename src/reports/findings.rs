@@ -6,7 +6,18 @@
 
 use crate::reports::risk_band::RiskBand;
 use crate::scanner::findings::FindingSeverity;
+use crate::scanner::scoring::ScoringResult;
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Private serde defaults
+// ---------------------------------------------------------------------------
+
+/// Returns the default `static_score` for a [`PluginFinding`] that was not
+/// produced via the confidence scorer (full confidence assumed).
+fn default_finding_static_score() -> f64 {
+    1.0
+}
 
 // ---------------------------------------------------------------------------
 // PluginFinding
@@ -57,6 +68,21 @@ pub struct PluginFinding {
     pub confidence: f64,
     /// Optional tags for grouping or filtering.
     pub tags: Vec<String>,
+    /// Static confidence score produced by the baseline fold, before the AI
+    /// blend step.
+    ///
+    /// Defaults to `1.0` for findings created by code paths that do not use
+    /// [`ConfidenceScorer`][crate::scanner::scoring::ConfidenceScorer].  Set
+    /// via [`with_scoring`][Self::with_scoring].
+    #[serde(default = "default_finding_static_score")]
+    pub static_score: f64,
+    /// Raw AI-reported confidence for this finding, if the AI leg was active
+    /// and returned a valid score.
+    ///
+    /// `None` when `ai_analysis_enabled` was `false` or the AI call failed.
+    /// Set via [`with_scoring`][Self::with_scoring].
+    #[serde(default)]
+    pub ai_score: Option<f64>,
 }
 
 impl PluginFinding {
@@ -112,6 +138,8 @@ impl PluginFinding {
             severity,
             confidence,
             tags: Vec::new(),
+            static_score: 1.0,
+            ai_score: None,
         }
     }
 
@@ -167,6 +195,51 @@ impl PluginFinding {
     /// ```
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
+        self
+    }
+
+    /// Updates the confidence audit fields from a [`ScoringResult`].
+    ///
+    /// Sets `confidence` to the blended score, `static_score` to the
+    /// static fold result, and `ai_score` to the AI-leg result.  Call
+    /// this after [`ConfidenceScorer::score`][crate::scanner::scoring::ConfidenceScorer::score]
+    /// has been computed for this finding.
+    ///
+    /// # Arguments
+    ///
+    /// * `result` - The [`ScoringResult`] produced by the confidence scorer.
+    ///
+    /// # Returns
+    ///
+    /// `self` with confidence audit fields updated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::reports::findings::PluginFinding;
+    /// use xzardgz::scanner::findings::FindingSeverity;
+    /// use xzardgz::scanner::scoring::ScoringResult;
+    ///
+    /// let result = ScoringResult {
+    ///     static_score: 0.4,
+    ///     ai_score: Some(0.9),
+    ///     blended_score: 0.65,
+    ///     violation_reasons: vec![],
+    /// };
+    ///
+    /// let f = PluginFinding::new(
+    ///     "injection", "Title", "Desc", FindingSeverity::High, 0.9,
+    /// )
+    /// .with_scoring(&result);
+    ///
+    /// assert!((f.confidence - 0.65).abs() < 1e-9);
+    /// assert!((f.static_score - 0.4).abs() < 1e-9);
+    /// assert_eq!(f.ai_score, Some(0.9));
+    /// ```
+    pub fn with_scoring(mut self, result: &ScoringResult) -> Self {
+        self.confidence = result.blended_score;
+        self.static_score = result.static_score;
+        self.ai_score = result.ai_score;
         self
     }
 }
@@ -357,6 +430,7 @@ impl PluginFindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scanner::scoring::ScoringResult;
 
     // ------------------------------------------------------------------
     // PluginFinding::new
@@ -421,6 +495,91 @@ mod tests {
     fn test_plugin_finding_with_tags_empty_vec_clears_tags() {
         let f = PluginFinding::new("k", "t", "d", FindingSeverity::Low, 0.1).with_tags(vec![]);
         assert!(f.tags.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // with_scoring
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_finding_with_scoring_sets_blended_confidence() {
+        let result = ScoringResult {
+            static_score: 0.4,
+            ai_score: Some(0.9),
+            blended_score: 0.65,
+            violation_reasons: vec![],
+        };
+        let f = PluginFinding::new("k", "t", "d", FindingSeverity::High, 0.9).with_scoring(&result);
+        assert!((f.confidence - 0.65).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_plugin_finding_with_scoring_sets_static_score() {
+        let result = ScoringResult {
+            static_score: 0.4,
+            ai_score: Some(0.9),
+            blended_score: 0.65,
+            violation_reasons: vec![],
+        };
+        let f = PluginFinding::new("k", "t", "d", FindingSeverity::High, 0.9).with_scoring(&result);
+        assert!((f.static_score - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_plugin_finding_with_scoring_sets_ai_score() {
+        let result = ScoringResult {
+            static_score: 0.4,
+            ai_score: Some(0.9),
+            blended_score: 0.65,
+            violation_reasons: vec![],
+        };
+        let f = PluginFinding::new("k", "t", "d", FindingSeverity::High, 0.9).with_scoring(&result);
+        assert_eq!(f.ai_score, Some(0.9));
+    }
+
+    #[test]
+    fn test_plugin_finding_with_scoring_none_ai_score() {
+        let result = ScoringResult {
+            static_score: 0.8,
+            ai_score: None,
+            blended_score: 0.8,
+            violation_reasons: vec![],
+        };
+        let f =
+            PluginFinding::new("k", "t", "d", FindingSeverity::Medium, 0.5).with_scoring(&result);
+        assert!(f.ai_score.is_none());
+        assert!((f.confidence - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_plugin_finding_default_static_score_is_one() {
+        let f = PluginFinding::new("k", "t", "d", FindingSeverity::Low, 0.5);
+        assert!((f.static_score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_plugin_finding_default_ai_score_is_none() {
+        let f = PluginFinding::new("k", "t", "d", FindingSeverity::Low, 0.5);
+        assert!(f.ai_score.is_none());
+    }
+
+    #[test]
+    fn test_plugin_finding_with_scoring_serde_roundtrip() {
+        let result = ScoringResult {
+            static_score: 0.4,
+            ai_score: Some(0.85),
+            blended_score: 0.625,
+            violation_reasons: vec![],
+        };
+        let f = PluginFinding::new("injection", "Title", "Desc", FindingSeverity::High, 0.85)
+            .with_scoring(&result);
+        // SAFETY: PluginFinding with valid data cannot fail serialization.
+        let json = serde_json::to_string(&f).unwrap();
+        // SAFETY: we just serialized this.
+        let restored: PluginFinding = serde_json::from_str(&json).unwrap();
+        assert!((restored.static_score - 0.4).abs() < 1e-9);
+        assert_eq!(restored.ai_score, Some(0.85));
+        assert!((restored.confidence - 0.625).abs() < 1e-9);
     }
 
     // ------------------------------------------------------------------
