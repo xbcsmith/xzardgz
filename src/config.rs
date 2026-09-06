@@ -617,6 +617,18 @@ pub struct TechnicalReviewConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub ai_analysis_enabled: bool,
+    /// Maximum number of matched files before the investigation switches to
+    /// batched sessions. When `None`, the default of `20` is used.
+    #[serde(default)]
+    pub investigation_threshold_files: Option<u64>,
+    /// Maximum total repository size in bytes before investigation switches to
+    /// batched sessions. When `None`, the default of `10_000_000` (10 MB) is used.
+    #[serde(default)]
+    pub investigation_threshold_bytes: Option<u64>,
+    /// Number of concurrent investigation batches.
+    /// When `None`, the default of `4` is used.
+    #[serde(default)]
+    pub investigation_batch_count: Option<u32>,
 }
 
 fn default_agent_max_turns() -> u32 {
@@ -679,6 +691,9 @@ impl Default for TechnicalReviewConfig {
             agent_max_turns: default_agent_max_turns(),
             ai_confidence_weight: default_ai_confidence_weight(),
             ai_analysis_enabled: default_true(),
+            investigation_threshold_files: None,
+            investigation_threshold_bytes: None,
+            investigation_batch_count: None,
         }
     }
 }
@@ -801,6 +816,18 @@ pub struct SecurityReviewConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub ai_analysis_enabled: bool,
+    /// Maximum number of matched files before the investigation switches to
+    /// batched sessions. When `None`, the default of `20` is used.
+    #[serde(default)]
+    pub investigation_threshold_files: Option<u64>,
+    /// Maximum total repository size in bytes before investigation switches to
+    /// batched sessions. When `None`, the default of `10_000_000` (10 MB) is used.
+    #[serde(default)]
+    pub investigation_threshold_bytes: Option<u64>,
+    /// Number of concurrent investigation batches.
+    /// When `None`, the default of `4` is used.
+    #[serde(default)]
+    pub investigation_batch_count: Option<u32>,
 }
 
 /// Default maximum agent turns for security review.
@@ -833,6 +860,9 @@ impl Default for SecurityReviewConfig {
             agent_max_turns: default_sec_agent_max_turns(),
             ai_confidence_weight: default_ai_confidence_weight(),
             ai_analysis_enabled: default_true(),
+            investigation_threshold_files: None,
+            investigation_threshold_bytes: None,
+            investigation_batch_count: None,
         }
     }
 }
@@ -1436,5 +1466,75 @@ mod tests {
         };
         config.merge_model_selection(&overrides);
         assert_eq!(config.model_selection.preferred_models, vec!["gpt-4o"]);
+    }
+
+    // ------------------------------------------------------------------
+    // TechnicalReviewConfig investigation thresholds
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_technical_review_config_investigation_threshold_files_defaults_to_none() {
+        let cfg = TechnicalReviewConfig::default();
+        assert!(cfg.investigation_threshold_files.is_none());
+    }
+
+    #[test]
+    fn test_technical_review_config_investigation_threshold_bytes_defaults_to_none() {
+        let cfg = TechnicalReviewConfig::default();
+        assert!(cfg.investigation_threshold_bytes.is_none());
+    }
+
+    #[test]
+    fn test_technical_review_config_investigation_batch_count_defaults_to_none() {
+        let cfg = TechnicalReviewConfig::default();
+        assert!(cfg.investigation_batch_count.is_none());
+    }
+
+    #[test]
+    fn test_technical_review_config_investigation_thresholds_can_be_set() {
+        let cfg = TechnicalReviewConfig {
+            investigation_threshold_files: Some(50),
+            investigation_threshold_bytes: Some(5_000_000),
+            investigation_batch_count: Some(8),
+            ..TechnicalReviewConfig::default()
+        };
+        assert_eq!(cfg.investigation_threshold_files, Some(50));
+        assert_eq!(cfg.investigation_threshold_bytes, Some(5_000_000));
+        assert_eq!(cfg.investigation_batch_count, Some(8));
+    }
+
+    // ------------------------------------------------------------------
+    // SecurityReviewConfig investigation thresholds
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_security_review_config_investigation_threshold_files_defaults_to_none() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(cfg.investigation_threshold_files.is_none());
+    }
+
+    #[test]
+    fn test_security_review_config_investigation_threshold_bytes_defaults_to_none() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(cfg.investigation_threshold_bytes.is_none());
+    }
+
+    #[test]
+    fn test_security_review_config_investigation_batch_count_defaults_to_none() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(cfg.investigation_batch_count.is_none());
+    }
+
+    #[test]
+    fn test_security_review_config_investigation_thresholds_can_be_set() {
+        let cfg = SecurityReviewConfig {
+            investigation_threshold_files: Some(30),
+            investigation_threshold_bytes: Some(8_000_000),
+            investigation_batch_count: Some(6),
+            ..SecurityReviewConfig::default()
+        };
+        assert_eq!(cfg.investigation_threshold_files, Some(30));
+        assert_eq!(cfg.investigation_threshold_bytes, Some(8_000_000));
+        assert_eq!(cfg.investigation_batch_count, Some(6));
     }
 }
