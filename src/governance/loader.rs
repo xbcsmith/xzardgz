@@ -21,6 +21,7 @@ use std::path::Path;
 use crate::config::GovernanceConfig;
 use crate::error::Result;
 
+use super::enrichment;
 use super::parser;
 use super::rules::{EnforcementLevel, GovernanceRule, RuleSource};
 
@@ -319,15 +320,72 @@ fn load_from_agents_md(path: &Path) -> RuleSet {
     }
 }
 
+/// Detects the primary programming language of the repository by checking for
+/// well-known manifest files in the current working directory.
+///
+/// # Returns
+///
+/// A `&'static str` language identifier: `"rust"`, `"javascript"`, `"python"`,
+/// or `"unknown"` when no manifest is recognised.
+fn detect_primary_language() -> &'static str {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if cwd.join("Cargo.toml").exists() {
+        return "rust";
+    }
+    if cwd.join("package.json").exists() {
+        return "javascript";
+    }
+    if cwd.join("pyproject.toml").exists() || cwd.join("setup.py").exists() {
+        return "python";
+    }
+    "unknown"
+}
+
+/// Appends derived enrichment rules to `base` for the detected primary language.
+///
+/// Calls [`detect_primary_language`] and [`enrichment::derive_from_context`] to
+/// obtain derived rules, then adds any rule whose `id` is not already present in
+/// `base`.  This is only called when no repository `AGENTS.md` was found.
+///
+/// # Arguments
+///
+/// * `base` - The starting [`RuleSet`] to enrich (typically [`embedded_defaults`]).
+///
+/// # Returns
+///
+/// A new [`RuleSet`] containing all rules from `base` plus any non-duplicate
+/// derived rules.
+fn apply_derived_enrichment(base: RuleSet) -> RuleSet {
+    let language = detect_primary_language();
+    let derived = enrichment::derive_from_context(language, &[]);
+    if derived.is_empty() {
+        return base;
+    }
+    let existing_ids: std::collections::HashSet<String> =
+        base.rules.iter().map(|r| r.id.clone()).collect();
+    let mut rules = base.rules;
+    for rule in derived {
+        if !existing_ids.contains(rule.id.as_str()) {
+            rules.push(rule);
+        }
+    }
+    RuleSet::new(rules)
+}
+
 /// Loads rules according to [`GovernanceConfig`].
 ///
 /// If `config.rules_path` is non-empty and the file exists, it is parsed as
 /// an `AGENTS.md` Markdown file via [`parser::parse_agents_md`] and merged
 /// with [`embedded_defaults`] (parsed rules take precedence by rule id).
-/// Otherwise [`embedded_defaults`] are returned without error.
+/// When AGENTS.md is found, no derived enrichment is performed; the repository
+/// file takes full precedence.
+///
+/// When no AGENTS.md is found (empty path or file does not exist), derived
+/// enrichment rules (tagged [`RuleSource::Derived`]) are appended to the
+/// embedded defaults via language auto-detection.
 ///
 /// A read or parse failure is logged as a warning and falls back to
-/// [`embedded_defaults`]; the function never returns `Err`.
+/// [`embedded_defaults`] with enrichment; the function never returns `Err`.
 ///
 /// # Arguments
 ///
@@ -344,7 +402,7 @@ fn load_from_agents_md(path: &Path) -> RuleSet {
 /// use xzardgz::config::GovernanceConfig;
 /// use xzardgz::governance::load_for_config;
 ///
-/// // With an empty rules_path, always returns embedded defaults.
+/// // With an empty rules_path, returns embedded defaults plus derived rules.
 /// let config = GovernanceConfig {
 ///     enabled: true,
 ///     rules_path: String::new(),
@@ -355,13 +413,13 @@ fn load_from_agents_md(path: &Path) -> RuleSet {
 /// ```
 pub fn load_for_config(config: &GovernanceConfig) -> Result<RuleSet> {
     if config.rules_path.is_empty() {
-        return Ok(embedded_defaults());
+        return Ok(apply_derived_enrichment(embedded_defaults()));
     }
     let path = Path::new(&config.rules_path);
     if path.exists() {
         Ok(load_from_agents_md(path))
     } else {
-        Ok(embedded_defaults())
+        Ok(apply_derived_enrichment(embedded_defaults()))
     }
 }
 
@@ -527,7 +585,11 @@ mod tests {
         };
         let result = load_for_config(&config);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), embedded_defaults().len());
+        // Embedded defaults are always present.
+        let rule_set = result.unwrap();
+        assert!(rule_set.has("governance.path.no_traversal"));
+        // Derived enrichment is appended when no AGENTS.md is found.
+        assert!(rule_set.len() >= embedded_defaults().len());
     }
 
     #[test]
@@ -542,7 +604,11 @@ mod tests {
             result.is_ok(),
             "missing file should fall back to defaults, not error"
         );
-        assert_eq!(result.unwrap().len(), embedded_defaults().len());
+        let rule_set = result.unwrap();
+        // Embedded defaults must be present.
+        assert!(rule_set.has("governance.path.no_traversal"));
+        // Derived enrichment is appended for the no-AGENTS.md case.
+        assert!(rule_set.len() >= embedded_defaults().len());
     }
 
     // ------------------------------------------------------------------
@@ -609,6 +675,127 @@ mod tests {
         assert!(result.is_ok());
         // Empty AGENTS.md -> only embedded defaults.
         assert_eq!(result.unwrap().len(), embedded_defaults().len());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2: Derived enrichment
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_load_for_config_with_agents_md_has_no_derived_rules() {
+        // A repository that has an AGENTS.md must NOT receive derived enrichment.
+        let content = "## Rules\n\n- You MUST follow rule one.\n";
+        let (_tmp, path) = write_temp_agents_md(content);
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: path.to_str().unwrap().to_string(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        let derived_count = rule_set
+            .rules
+            .iter()
+            .filter(|r| matches!(r.source, RuleSource::Derived))
+            .count();
+        assert_eq!(
+            derived_count, 0,
+            "repository with AGENTS.md must not receive derived enrichment"
+        );
+    }
+
+    #[test]
+    fn test_load_for_config_without_agents_md_has_derived_rules() {
+        // A repository without an AGENTS.md must receive embedded defaults + derived enrichment.
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: String::new(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        let derived_count = rule_set
+            .rules
+            .iter()
+            .filter(|r| matches!(r.source, RuleSource::Derived))
+            .count();
+        // Running in a Rust project (Cargo.toml present) so Rust derived rules must be appended.
+        assert!(
+            derived_count > 0,
+            "repository without AGENTS.md must receive derived enrichment rules"
+        );
+        // Embedded defaults must still be present.
+        assert!(rule_set.has("governance.path.no_traversal"));
+        // Total count must exceed embedded defaults alone.
+        assert!(rule_set.len() > embedded_defaults().len());
+    }
+
+    #[test]
+    fn test_load_for_config_without_agents_md_embedded_rules_all_present() {
+        // Verify every embedded default rule survives enrichment.
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: String::new(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        for id in &[
+            "governance.path.no_traversal",
+            "governance.path.no_null",
+            "governance.plugin.valid_name",
+            "governance.event.known_type",
+            "governance.endpoint.require_https",
+            "governance.content.no_secrets_pattern",
+            "governance.branch.safe_pattern",
+            "governance.workspace.no_traversal",
+            "governance.output.no_traversal",
+            "governance.report.no_traversal",
+        ] {
+            assert!(
+                rule_set.has(id),
+                "embedded rule {} must survive enrichment",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_for_config_nonexistent_path_has_derived_rules() {
+        // Nonexistent AGENTS.md also triggers enrichment.
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: "/tmp/xzardgz_does_not_exist_phase2.md".to_string(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        let derived_count = rule_set
+            .rules
+            .iter()
+            .filter(|r| matches!(r.source, RuleSource::Derived))
+            .count();
+        assert!(
+            derived_count > 0,
+            "nonexistent AGENTS.md path must trigger derived enrichment"
+        );
+    }
+
+    #[test]
+    fn test_load_for_config_with_empty_agents_md_has_no_derived_rules() {
+        // An empty AGENTS.md is still a found file; derived enrichment must NOT be added.
+        let (_tmp, path) = write_temp_agents_md("");
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: path.to_str().unwrap().to_string(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        let derived_count = rule_set
+            .rules
+            .iter()
+            .filter(|r| matches!(r.source, RuleSource::Derived))
+            .count();
+        assert_eq!(
+            derived_count, 0,
+            "empty but present AGENTS.md must not trigger derived enrichment"
+        );
     }
 
     #[test]

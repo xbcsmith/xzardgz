@@ -1,6 +1,6 @@
 //! Governance system for the XZardgz pipeline.
 //!
-//! This module implements a three-layer governance architecture:
+//! This module implements a four-layer governance architecture:
 //!
 //! ## Layer 1 — Rules (`rules`)
 //!
@@ -10,14 +10,21 @@
 //! `fail_on_violation` is set), `Recommended` rules produce warning
 //! diagnostics, and `Optional` rules produce info diagnostics.
 //!
-//! ## Layer 2 — Loader (`loader`)
+//! ## Layer 2 — Enrichment (`enrichment`)
+//!
+//! Generates language-specific [`GovernanceRule`] values tagged
+//! [`RuleSource::Derived`] at runtime.  Derived rules are appended to the
+//! active rule set only when no `AGENTS.md` is present, so explicit
+//! repository governance always takes precedence.
+//!
+//! ## Layer 3 — Loader (`loader`)
 //!
 //! Resolves the active [`RuleSet`] from a combination of hardcoded embedded
 //! defaults and an optional repository governance YAML file.  The file format
 //! supports disabling individual rules and changing enforcement levels without
 //! recompiling the binary.
 //!
-//! ## Layer 3 — Validator / Checker (`validator`, [`GovernanceChecker`])
+//! ## Layer 4 — Validator / Checker (`validator`, [`GovernanceChecker`])
 //!
 //! Applies the active [`RuleSet`] to concrete pipeline inputs.
 //! [`GovernanceValidator`] performs the raw checks and returns structured
@@ -44,6 +51,7 @@
 //! assert!(diags.is_empty());
 //! ```
 
+pub mod enrichment;
 pub mod loader;
 pub mod parser;
 pub mod rules;
