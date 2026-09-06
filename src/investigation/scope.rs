@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::scanner::result::ScanResult;
+
 // ---------------------------------------------------------------------------
 // FileMatchEntry
 // ---------------------------------------------------------------------------
@@ -800,5 +802,368 @@ mod tests {
         let mut scope = InvestigationScope::new();
         scope.insert(FileMatchEntry::new("big.rs").with_size(1_000_000));
         assert_eq!(scope.total_bytes(), 1_000_000);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ScopeMetrics
+// ---------------------------------------------------------------------------
+
+/// Repository-level scope metrics used to compute turn budgets and select
+/// investigation strategies.
+///
+/// `ScopeMetrics` captures three numbers derived from a scan result:
+/// - `total_files` — total file count across the whole repository.
+/// - `total_size_bytes` — sum of all file sizes in the repository.
+/// - `matched_file_count` — count of unique files that matched at least one
+///   concern category in [`PluginPreselection`] (risky patterns, secrets-like,
+///   unsafe Rust, command execution, network clients, authentication files).
+///
+/// Use [`ScopeMetrics::from_scan_result`] to build from a [`ScanResult`], or
+/// [`ScopeMetrics::from_investigation_scope`] to build from an
+/// [`InvestigationScope`] (where `total_files == matched_file_count`).
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::investigation::scope::ScopeMetrics;
+///
+/// let m = ScopeMetrics::new(500, 1_048_576, 25);
+/// assert_eq!(m.total_files, 500);
+/// assert_eq!(m.total_size_bytes, 1_048_576);
+/// assert_eq!(m.matched_file_count, 25);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeMetrics {
+    /// Total number of files in the repository.
+    pub total_files: u64,
+    /// Total size of all repository files in bytes.
+    pub total_size_bytes: u64,
+    /// Number of unique files matched by concern-category preselection.
+    pub matched_file_count: u64,
+}
+
+impl ScopeMetrics {
+    /// Creates a [`ScopeMetrics`] with the three scalar values.
+    ///
+    /// # Arguments
+    ///
+    /// * `total_files` - Total file count in the repository.
+    /// * `total_size_bytes` - Total byte count for all repository files.
+    /// * `matched_file_count` - Number of unique concern-matched files.
+    ///
+    /// # Returns
+    ///
+    /// A new [`ScopeMetrics`] with the given values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::investigation::scope::ScopeMetrics;
+    ///
+    /// let m = ScopeMetrics::new(1000, 2_097_152, 50);
+    /// assert_eq!(m.total_files, 1000);
+    /// assert_eq!(m.total_size_bytes, 2_097_152);
+    /// assert_eq!(m.matched_file_count, 50);
+    /// ```
+    pub fn new(total_files: u64, total_size_bytes: u64, matched_file_count: u64) -> Self {
+        Self {
+            total_files,
+            total_size_bytes,
+            matched_file_count,
+        }
+    }
+
+    /// Builds [`ScopeMetrics`] from a [`ScanResult`].
+    ///
+    /// - `total_files` = `scan_result.repository_structure.len()` cast to `u64`.
+    /// - `total_size_bytes` = sum of `size_bytes` across all entries in
+    ///   `scan_result.repository_structure`.
+    /// - `matched_file_count` = count of unique file paths appearing in any of
+    ///   the concern lists from `scan_result.plugin_preselection`:
+    ///   `risky_pattern_files`, `secrets_like_files`, `unsafe_rust_files`,
+    ///   `command_execution_files`, `network_client_files`, and `auth_files`.
+    ///   Files appearing in multiple lists are counted once.
+    ///
+    /// # Arguments
+    ///
+    /// * `scan_result` - The scan result to derive metrics from.
+    ///
+    /// # Returns
+    ///
+    /// A [`ScopeMetrics`] populated from the scan result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use chrono::Utc;
+    /// use std::collections::HashMap;
+    /// use xzardgz::scanner::result::{PluginPreselection, ScanResult, SCAN_RESULT_VERSION};
+    /// use xzardgz::investigation::scope::ScopeMetrics;
+    ///
+    /// let scan = ScanResult {
+    ///     version: SCAN_RESULT_VERSION.to_string(),
+    ///     repository_url: None,
+    ///     repository_name: None,
+    ///     head_commit: None,
+    ///     scan_timestamp: Utc::now(),
+    ///     repository_structure: vec![],
+    ///     language_statistics: HashMap::new(),
+    ///     primary_language: None,
+    ///     frameworks: vec![],
+    ///     documentation_inventory: vec![],
+    ///     governance_rules: vec![],
+    ///     cli_commands: vec![],
+    ///     public_apis: vec![],
+    ///     entrypoints: vec![],
+    ///     config_surface: vec![],
+    ///     key_files: vec![],
+    ///     dependency_manifests: vec![],
+    ///     test_files: vec![],
+    ///     build_files: vec![],
+    ///     security_relevant_files: vec![],
+    ///     findings: vec![],
+    ///     plugin_preselection: PluginPreselection::default(),
+    /// };
+    /// let m = ScopeMetrics::from_scan_result(&scan);
+    /// assert_eq!(m.total_files, 0);
+    /// assert_eq!(m.total_size_bytes, 0);
+    /// assert_eq!(m.matched_file_count, 0);
+    /// ```
+    pub fn from_scan_result(scan_result: &ScanResult) -> Self {
+        let total_files = scan_result.repository_structure.len() as u64;
+        let total_size_bytes = scan_result
+            .repository_structure
+            .iter()
+            .map(|f| f.size_bytes)
+            .sum();
+        let ps = &scan_result.plugin_preselection;
+        let mut seen = std::collections::HashSet::new();
+        for path in ps
+            .risky_pattern_files
+            .iter()
+            .chain(ps.secrets_like_files.iter())
+            .chain(ps.unsafe_rust_files.iter())
+            .chain(ps.command_execution_files.iter())
+            .chain(ps.network_client_files.iter())
+            .chain(ps.auth_files.iter())
+        {
+            seen.insert(path.as_str());
+        }
+        let matched_file_count = seen.len() as u64;
+        Self {
+            total_files,
+            total_size_bytes,
+            matched_file_count,
+        }
+    }
+
+    /// Builds [`ScopeMetrics`] from an [`InvestigationScope`].
+    ///
+    /// Since an [`InvestigationScope`] does not carry repository-wide totals,
+    /// this constructor treats the scope as the full universe:
+    /// `total_files` and `matched_file_count` both equal `scope.len()`, and
+    /// `total_size_bytes` equals `scope.total_bytes()`.
+    ///
+    /// This is the right constructor when a [`ScanResult`] is not available, e.g.
+    /// in tests or when building a scope from a filtered subset of files.
+    ///
+    /// # Arguments
+    ///
+    /// * `scope` - The investigation scope to derive metrics from.
+    ///
+    /// # Returns
+    ///
+    /// A [`ScopeMetrics`] where all totals reflect the given scope only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::investigation::scope::{FileMatchEntry, InvestigationScope, ScopeMetrics};
+    ///
+    /// let mut scope = InvestigationScope::new();
+    /// scope.insert(FileMatchEntry::new("a.rs").with_size(100));
+    /// scope.insert(FileMatchEntry::new("b.rs").with_size(200));
+    ///
+    /// let m = ScopeMetrics::from_investigation_scope(&scope);
+    /// assert_eq!(m.total_files, 2);
+    /// assert_eq!(m.total_size_bytes, 300);
+    /// assert_eq!(m.matched_file_count, 2);
+    /// ```
+    pub fn from_investigation_scope(scope: &InvestigationScope) -> Self {
+        Self {
+            total_files: scope.len() as u64,
+            total_size_bytes: scope.total_bytes(),
+            matched_file_count: scope.len() as u64,
+        }
+    }
+}
+
+#[cfg(test)]
+mod scope_metrics_tests {
+    use super::*;
+    use crate::scanner::result::{FileEntry, PluginPreselection, ScanResult};
+    use chrono::Utc;
+
+    fn minimal_scan_result() -> ScanResult {
+        ScanResult {
+            version: "1".to_string(),
+            repository_url: None,
+            repository_name: None,
+            head_commit: None,
+            scan_timestamp: Utc::now(),
+            repository_structure: vec![],
+            language_statistics: std::collections::HashMap::new(),
+            primary_language: None,
+            frameworks: vec![],
+            documentation_inventory: vec![],
+            governance_rules: vec![],
+            cli_commands: vec![],
+            public_apis: vec![],
+            entrypoints: vec![],
+            config_surface: vec![],
+            key_files: vec![],
+            dependency_manifests: vec![],
+            test_files: vec![],
+            build_files: vec![],
+            security_relevant_files: vec![],
+            findings: vec![],
+            plugin_preselection: PluginPreselection::default(),
+        }
+    }
+
+    #[test]
+    fn test_scope_metrics_new_sets_all_fields() {
+        let m = ScopeMetrics::new(500, 1_048_576, 25);
+        assert_eq!(m.total_files, 500);
+        assert_eq!(m.total_size_bytes, 1_048_576);
+        assert_eq!(m.matched_file_count, 25);
+    }
+
+    #[test]
+    fn test_scope_metrics_new_with_zero_values_produces_zero_metrics() {
+        let m = ScopeMetrics::new(0, 0, 0);
+        assert_eq!(m.total_files, 0);
+        assert_eq!(m.total_size_bytes, 0);
+        assert_eq!(m.matched_file_count, 0);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_investigation_scope_empty_scope_returns_all_zeros() {
+        let scope = InvestigationScope::new();
+        let m = ScopeMetrics::from_investigation_scope(&scope);
+        assert_eq!(m.total_files, 0);
+        assert_eq!(m.total_size_bytes, 0);
+        assert_eq!(m.matched_file_count, 0);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_investigation_scope_with_entries_counts_correctly() {
+        let mut scope = InvestigationScope::new();
+        scope.insert(FileMatchEntry::new("a.rs").with_size(100));
+        scope.insert(FileMatchEntry::new("b.rs").with_size(200));
+        let m = ScopeMetrics::from_investigation_scope(&scope);
+        assert_eq!(m.total_files, 2);
+        assert_eq!(m.total_size_bytes, 300);
+        assert_eq!(m.matched_file_count, 2);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_investigation_scope_total_files_equals_matched_file_count() {
+        let mut scope = InvestigationScope::new();
+        scope.insert(FileMatchEntry::new("x.rs").with_size(50));
+        scope.insert(FileMatchEntry::new("y.rs").with_size(75));
+        scope.insert(FileMatchEntry::new("z.rs").with_size(25));
+        let m = ScopeMetrics::from_investigation_scope(&scope);
+        assert_eq!(m.total_files, m.matched_file_count);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_empty_scan_result_returns_all_zeros() {
+        let scan = minimal_scan_result();
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.total_files, 0);
+        assert_eq!(m.total_size_bytes, 0);
+        assert_eq!(m.matched_file_count, 0);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_counts_repository_structure() {
+        let mut scan = minimal_scan_result();
+        scan.repository_structure = vec![
+            FileEntry {
+                path: "src/main.rs".to_string(),
+                size_bytes: 512,
+                language: Some("Rust".to_string()),
+                is_binary: false,
+            },
+            FileEntry {
+                path: "src/lib.rs".to_string(),
+                size_bytes: 1024,
+                language: Some("Rust".to_string()),
+                is_binary: false,
+            },
+            FileEntry {
+                path: "README.md".to_string(),
+                size_bytes: 256,
+                language: None,
+                is_binary: false,
+            },
+        ];
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.total_files, 3);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_sums_file_sizes() {
+        let mut scan = minimal_scan_result();
+        scan.repository_structure = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                size_bytes: 100,
+                language: None,
+                is_binary: false,
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                size_bytes: 200,
+                language: None,
+                is_binary: false,
+            },
+        ];
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.total_size_bytes, 300);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_counts_unique_matched_files() {
+        let mut scan = minimal_scan_result();
+        scan.plugin_preselection.risky_pattern_files = vec!["src/risky.rs".to_string()];
+        scan.plugin_preselection.secrets_like_files = vec!["config/secrets.toml".to_string()];
+        scan.plugin_preselection.auth_files = vec!["src/auth.rs".to_string()];
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.matched_file_count, 3);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_deduplicates_files_in_multiple_categories() {
+        let mut scan = minimal_scan_result();
+        // The same file appears in two concern lists; it must be counted once.
+        scan.plugin_preselection.risky_pattern_files = vec!["src/danger.rs".to_string()];
+        scan.plugin_preselection.unsafe_rust_files = vec!["src/danger.rs".to_string()];
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.matched_file_count, 1);
+    }
+
+    #[test]
+    fn test_scope_metrics_from_scan_result_non_concern_preselection_fields_not_counted() {
+        let mut scan = minimal_scan_result();
+        // Populate only non-concern preselection fields; matched_file_count must stay 0.
+        scan.plugin_preselection.entrypoints = vec!["src/main.rs".to_string()];
+        scan.plugin_preselection.public_apis = vec!["src/lib.rs".to_string()];
+        scan.plugin_preselection.test_files = vec!["tests/integration_test.rs".to_string()];
+        scan.plugin_preselection.missing_test_signals = vec!["src/uncovered.rs".to_string()];
+        let m = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(m.matched_file_count, 0);
     }
 }
