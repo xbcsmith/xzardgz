@@ -1,83 +1,28 @@
 //! Rule set loading and resolution for the governance system.
 //!
-//! This module is responsible for resolving the active [`RuleSet`] that the
-//! validator uses.  It merges hardcoded embedded defaults with overrides and
-//! additions supplied by a YAML governance file in the repository.
+//! This module resolves the active [`RuleSet`] from a combination of
+//! hardcoded embedded defaults and an optional `AGENTS.md` Markdown file in
+//! the repository.  When a `rules_path` is configured and the file exists, the
+//! file is parsed by [`parser::parse_agents_md`]; the resulting rules are
+//! merged with [`embedded_defaults`] (parsed rules take precedence by ID).
+//! On any failure the module falls back silently to embedded defaults.
 //!
 //! Typical call sequence:
 //!
 //! 1. Call [`load_for_config`] with the current [`GovernanceConfig`].
-//! 2. Pass the returned [`RuleSet`] to [`crate::governance::validator::GovernanceValidator::new`].
+//! 2. Pass the returned [`RuleSet`] to
+//!    [`crate::governance::validator::GovernanceValidator::new`].
 //!
 //! For testing or advanced use, [`embedded_defaults`] returns the full default
-//! set and [`load_from_path`] merges a specific file on top of those defaults.
+//! set without any repository customisation.
 
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
 use crate::config::GovernanceConfig;
-use crate::error::{PipelineError, Result};
+use crate::error::Result;
 
+use super::parser;
 use super::rules::{EnforcementLevel, GovernanceRule, RuleSource};
-
-// ---------------------------------------------------------------------------
-// Repository file schema
-// ---------------------------------------------------------------------------
-
-/// A rule override entry in a repository governance file.
-///
-/// Overrides can disable an embedded rule entirely or change its enforcement
-/// level without modifying the binary.
-///
-/// # Examples
-///
-/// ```yaml
-/// overrides:
-///   - id: "governance.branch.safe_pattern"
-///     enforcement: Optional
-///   - id: "governance.content.no_secrets_pattern"
-///     disabled: true
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleOverride {
-    /// ID of the rule to override (must match an existing rule ID).
-    pub id: String,
-    /// New enforcement level for the rule.  `None` means keep the default.
-    pub enforcement: Option<EnforcementLevel>,
-    /// When `true` the rule is removed from the active set entirely.
-    #[serde(default)]
-    pub disabled: bool,
-}
-
-/// A custom rule defined entirely within the repository governance file.
-///
-/// Custom rules are validated with the same mechanisms as embedded rules;
-/// their [`RuleSource`] is set to [`RuleSource::Derived`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CustomRule {
-    /// Unique identifier for this custom rule.
-    pub id: String,
-    /// Human-readable description of what this rule enforces.
-    pub description: String,
-    /// How violations of this rule are handled.
-    pub enforcement: EnforcementLevel,
-}
-
-/// Top-level schema for a YAML governance file stored in the repository.
-///
-/// The file can contain zero or more [`RuleOverride`] entries and zero or more
-/// [`CustomRule`] additions.  Both fields default to empty lists so a minimal
-/// file can be as short as `{}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RulesFile {
-    /// Overrides to apply on top of embedded defaults.
-    #[serde(default)]
-    pub overrides: Vec<RuleOverride>,
-    /// Additional rules to append after embedded defaults have been merged.
-    #[serde(default)]
-    pub additional_rules: Vec<CustomRule>,
-}
 
 // ---------------------------------------------------------------------------
 // RuleSet
@@ -325,91 +270,64 @@ pub fn embedded_defaults() -> RuleSet {
 }
 
 // ---------------------------------------------------------------------------
-// File-based loading
+// Markdown-based loading
 // ---------------------------------------------------------------------------
 
-/// Loads a governance rules file from `path` and merges it with embedded defaults.
+/// Merges a set of parsed rules with embedded defaults.
 ///
-/// The merge order is:
-/// 1. Start with all embedded default rules.
-/// 2. Apply each [`RuleOverride`]: disabled rules are removed; enforcement
-///    changes are applied in place.
-/// 3. Append [`CustomRule`] additions as new [`GovernanceRule`] entries with
-///    [`RuleSource::Derived`].
-///
-/// # Arguments
-///
-/// * `path` - Filesystem path to a YAML governance rules file.
-///
-/// # Errors
-///
-/// Returns [`PipelineError::Governance`] when the file cannot be read or when
-/// its contents cannot be parsed as a [`RulesFile`].
-///
-/// # Examples
-///
-/// ```no_run
-/// use std::path::Path;
-/// use xzardgz::governance::load_from_path;
-///
-/// let rule_set = load_from_path(Path::new("governance_rules.yaml")).unwrap();
-/// assert!(!rule_set.is_empty());
-/// ```
-pub fn load_from_path(path: &Path) -> Result<RuleSet> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        PipelineError::Governance(format!(
-            "failed to read governance rules file '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
-
-    let rules_file: RulesFile = serde_yaml::from_str(&content).map_err(|e| {
-        PipelineError::Governance(format!(
-            "failed to parse governance rules file '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
-
+/// Parsed rules take precedence: any embedded rule whose `id` already exists
+/// in `parsed` is not added again.  This preserves repository-specific
+/// customisations while ensuring all security-critical defaults are present.
+fn merge_with_defaults(parsed: Vec<GovernanceRule>) -> RuleSet {
     let defaults = embedded_defaults();
-
-    // Apply overrides: keep rules that are not disabled; update enforcement levels.
-    let mut active: Vec<GovernanceRule> = defaults
-        .rules
-        .into_iter()
-        .filter_map(|mut rule| {
-            if let Some(ovr) = rules_file.overrides.iter().find(|o| o.id == rule.id) {
-                if ovr.disabled {
-                    return None;
-                }
-                if let Some(level) = &ovr.enforcement {
-                    rule.enforcement = level.clone();
-                }
-            }
-            Some(rule)
-        })
-        .collect();
-
-    // Append additional custom rules.
-    for custom in rules_file.additional_rules {
-        active.push(GovernanceRule {
-            id: custom.id,
-            description: custom.description,
-            enforcement: custom.enforcement,
-            source: RuleSource::Derived,
-        });
+    let existing_ids: std::collections::HashSet<String> =
+        parsed.iter().map(|r| r.id.clone()).collect();
+    let mut rules = parsed;
+    for rule in defaults.rules {
+        if !existing_ids.contains(rule.id.as_str()) {
+            rules.push(rule);
+        }
     }
+    RuleSet::new(rules)
+}
 
-    Ok(RuleSet::new(active))
+/// Reads an `AGENTS.md` file at `path`, parses it into governance rules, and
+/// merges the result with embedded defaults.
+///
+/// On any read or parse failure, logs a warning via `tracing::warn!` and falls
+/// back to `embedded_defaults()` — never returns an error.
+fn load_from_agents_md(path: &Path) -> RuleSet {
+    match std::fs::read_to_string(path) {
+        Err(e) => {
+            tracing::warn!(
+                "governance: could not read '{}': {}; falling back to embedded defaults",
+                path.display(),
+                e
+            );
+            embedded_defaults()
+        }
+        Ok(content) => {
+            let parsed = parser::parse_agents_md(&content);
+            if parsed.is_empty() {
+                tracing::warn!(
+                    "governance: no rules found in '{}'; embedded defaults will be used",
+                    path.display()
+                );
+            }
+            merge_with_defaults(parsed)
+        }
+    }
 }
 
 /// Loads rules according to [`GovernanceConfig`].
 ///
-/// If `config.rules_path` is non-empty and the file exists on disk, the rules
-/// are loaded via [`load_from_path`].  Otherwise the function falls back to
-/// [`embedded_defaults`] without error.  This allows a repository to ship a
-/// governance file without breaking deployments that do not have one.
+/// If `config.rules_path` is non-empty and the file exists, it is parsed as
+/// an `AGENTS.md` Markdown file via [`parser::parse_agents_md`] and merged
+/// with [`embedded_defaults`] (parsed rules take precedence by rule id).
+/// Otherwise [`embedded_defaults`] are returned without error.
+///
+/// A read or parse failure is logged as a warning and falls back to
+/// [`embedded_defaults`]; the function never returns `Err`.
 ///
 /// # Arguments
 ///
@@ -417,8 +335,8 @@ pub fn load_from_path(path: &Path) -> Result<RuleSet> {
 ///
 /// # Errors
 ///
-/// Returns [`PipelineError::Governance`] only when a rules file is found but
-/// cannot be read or parsed.
+/// This function always returns `Ok`.  The `Result` wrapper is kept for API
+/// compatibility with existing callers.
 ///
 /// # Examples
 ///
@@ -426,7 +344,7 @@ pub fn load_from_path(path: &Path) -> Result<RuleSet> {
 /// use xzardgz::config::GovernanceConfig;
 /// use xzardgz::governance::load_for_config;
 ///
-/// // With an empty rules_path, always falls back to embedded defaults.
+/// // With an empty rules_path, always returns embedded defaults.
 /// let config = GovernanceConfig {
 ///     enabled: true,
 ///     rules_path: String::new(),
@@ -439,9 +357,9 @@ pub fn load_for_config(config: &GovernanceConfig) -> Result<RuleSet> {
     if config.rules_path.is_empty() {
         return Ok(embedded_defaults());
     }
-    let path = std::path::Path::new(&config.rules_path);
+    let path = Path::new(&config.rules_path);
     if path.exists() {
-        load_from_path(path)
+        Ok(load_from_agents_md(path))
     } else {
         Ok(embedded_defaults())
     }
@@ -454,7 +372,6 @@ pub fn load_for_config(config: &GovernanceConfig) -> Result<RuleSet> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::PipelineError;
 
     // ------------------------------------------------------------------
     // embedded_defaults
@@ -598,142 +515,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // load_from_path
-    // ------------------------------------------------------------------
-
-    fn write_temp_yaml(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        // SAFETY: TempDir::new() only fails when the OS cannot create a temporary
-        // directory, which is not expected in a normal test environment.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("governance_rules.yaml");
-        // SAFETY: Writing to a freshly created TempDir cannot fail under normal conditions.
-        std::fs::write(&path, content).unwrap();
-        (tmp, path)
-    }
-
-    #[test]
-    fn test_load_from_path_with_empty_overrides_returns_all_defaults() {
-        let content = "overrides: []\nadditional_rules: []\n";
-        let (_tmp, path) = write_temp_yaml(content);
-
-        let result = load_from_path(&path);
-        assert!(result.is_ok(), "should parse successfully: {:?}", result);
-        let rule_set = result.unwrap();
-        assert_eq!(
-            rule_set.len(),
-            embedded_defaults().len(),
-            "empty overrides file should return all default rules"
-        );
-    }
-
-    #[test]
-    fn test_load_from_path_with_disabled_rule_removes_it() {
-        let content = "\
-overrides:
-  - id: governance.branch.safe_pattern
-    disabled: true
-additional_rules: []
-";
-        let (_tmp, path) = write_temp_yaml(content);
-
-        let result = load_from_path(&path);
-        assert!(result.is_ok());
-        let rule_set = result.unwrap();
-        assert!(
-            !rule_set.has("governance.branch.safe_pattern"),
-            "disabled rule should be removed"
-        );
-        assert_eq!(
-            rule_set.len(),
-            embedded_defaults().len() - 1,
-            "set should have one fewer rule after disabling"
-        );
-    }
-
-    #[test]
-    fn test_load_from_path_with_enforcement_override_changes_level() {
-        let content = "\
-overrides:
-  - id: governance.branch.safe_pattern
-    enforcement: Required
-additional_rules: []
-";
-        let (_tmp, path) = write_temp_yaml(content);
-
-        let result = load_from_path(&path);
-        assert!(result.is_ok());
-        let rule_set = result.unwrap();
-        let rule = rule_set.get("governance.branch.safe_pattern");
-        assert!(rule.is_some());
-        assert_eq!(
-            rule.unwrap().enforcement,
-            EnforcementLevel::Required,
-            "enforcement override should be applied"
-        );
-    }
-
-    #[test]
-    fn test_load_from_path_with_additional_rules_appends_them() {
-        let content = "\
-overrides: []
-additional_rules:
-  - id: custom.my_rule
-    description: A custom rule for this repository
-    enforcement: Recommended
-";
-        let (_tmp, path) = write_temp_yaml(content);
-
-        let result = load_from_path(&path);
-        assert!(result.is_ok());
-        let rule_set = result.unwrap();
-        assert_eq!(
-            rule_set.len(),
-            embedded_defaults().len() + 1,
-            "additional rule should be appended"
-        );
-        let custom = rule_set.get("custom.my_rule");
-        assert!(custom.is_some(), "custom rule should be findable by id");
-        assert_eq!(custom.unwrap().enforcement, EnforcementLevel::Recommended);
-        assert!(
-            matches!(custom.unwrap().source, RuleSource::Derived),
-            "custom rule source should be Derived"
-        );
-    }
-
-    #[test]
-    fn test_load_from_path_with_invalid_yaml_returns_governance_error() {
-        // A YAML mapping key followed immediately by another ':' is illegal.
-        let content = "overrides: [{id: [broken yaml}\n";
-        let (_tmp, path) = write_temp_yaml(content);
-
-        let result = load_from_path(&path);
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), PipelineError::Governance(_)),
-            "parse failure should produce PipelineError::Governance"
-        );
-    }
-
-    #[test]
-    fn test_load_from_path_with_missing_file_returns_governance_error() {
-        let path = std::path::Path::new("/tmp/xzardgz_does_not_exist_abc123.yaml");
-        // Ensure this path truly does not exist before testing.
-        assert!(!path.exists(), "test precondition: path must not exist");
-
-        // load_from_path should fail with Governance error on a missing file.
-        let result = load_from_path(path);
-        // The path should not exist (we constructed a highly-unique name), but
-        // if by some cosmic coincidence it does, skip the assertion.
-        if !path.exists() {
-            assert!(result.is_err());
-            assert!(
-                matches!(result.unwrap_err(), PipelineError::Governance(_)),
-                "missing file should produce PipelineError::Governance"
-            );
-        }
-    }
-
-    // ------------------------------------------------------------------
     // load_for_config
     // ------------------------------------------------------------------
 
@@ -764,25 +545,105 @@ additional_rules:
         assert_eq!(result.unwrap().len(), embedded_defaults().len());
     }
 
-    #[test]
-    fn test_load_for_config_with_valid_file_merges_correctly() {
-        let content = "\
-overrides:
-  - id: governance.branch.safe_pattern
-    disabled: true
-additional_rules: []
-";
-        let (_tmp, path) = write_temp_yaml(content);
+    // ------------------------------------------------------------------
+    // load_from_agents_md / load_for_config (Markdown-based)
+    // ------------------------------------------------------------------
 
+    fn write_temp_agents_md(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        // SAFETY: TempDir::new() only fails on OS error; not expected in tests.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        // SAFETY: writing to a freshly created TempDir cannot fail under normal conditions.
+        std::fs::write(&path, content).unwrap();
+        (tmp, path)
+    }
+
+    #[test]
+    fn test_load_from_agents_md_with_valid_file_returns_rules_plus_defaults() {
+        let content = "## My Rules\n\n- You MUST follow rule one.\n- Follow rule two.\n";
+        let (_tmp, path) = write_temp_agents_md(content);
+
+        // load_from_agents_md is private; test via load_for_config.
         let config = GovernanceConfig {
             enabled: true,
-            // SAFETY: path was just created by write_temp_yaml; to_str() is safe
             rules_path: path.to_str().unwrap().to_string(),
-            fail_on_violation: true,
+            fail_on_violation: false,
         };
         let result = load_for_config(&config);
         assert!(result.is_ok());
         let rule_set = result.unwrap();
-        assert!(!rule_set.has("governance.branch.safe_pattern"));
+        // Parsed rules + embedded defaults.
+        assert!(rule_set.len() > embedded_defaults().len());
+        // Embedded defaults must still be present.
+        assert!(rule_set.has("governance.path.no_traversal"));
+    }
+
+    #[test]
+    fn test_load_for_config_with_agents_md_parsed_rules_have_correct_ids() {
+        let content = "## Security\n\n- You MUST use HTTPS.\n";
+        let (_tmp, path) = write_temp_agents_md(content);
+
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: path.to_str().unwrap().to_string(),
+            fail_on_violation: false,
+        };
+        let rule_set = load_for_config(&config).unwrap();
+        assert!(
+            rule_set.has("agents_md.security.1"),
+            "parsed rule must be present"
+        );
+        let rule = rule_set.get("agents_md.security.1").unwrap();
+        assert_eq!(rule.enforcement, EnforcementLevel::Required);
+    }
+
+    #[test]
+    fn test_load_from_agents_md_with_empty_file_returns_defaults_only() {
+        let (_tmp, path) = write_temp_agents_md("");
+        let config = GovernanceConfig {
+            enabled: true,
+            rules_path: path.to_str().unwrap().to_string(),
+            fail_on_violation: false,
+        };
+        let result = load_for_config(&config);
+        assert!(result.is_ok());
+        // Empty AGENTS.md -> only embedded defaults.
+        assert_eq!(result.unwrap().len(), embedded_defaults().len());
+    }
+
+    #[test]
+    fn test_load_for_config_with_real_agents_md_returns_rules_and_defaults() {
+        // Live fixture: load the real AGENTS.md of this repository.
+        // CARGO_MANIFEST_DIR is set by cargo during test runs.
+        // SAFETY: CARGO_MANIFEST_DIR is always set by cargo; unwrap is safe in tests.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR not set; this test must be run via cargo test");
+        let agents_md = std::path::Path::new(&manifest).join("AGENTS.md");
+        if !agents_md.exists() {
+            // Skip if AGENTS.md is not present in this build environment.
+            return;
+        }
+        let config = GovernanceConfig {
+            enabled: true,
+            // SAFETY: agents_md was just confirmed to exist; to_str() is safe for valid UTF-8 paths.
+            rules_path: agents_md.to_str().unwrap().to_string(),
+            fail_on_violation: false,
+        };
+        let result = load_for_config(&config);
+        assert!(
+            result.is_ok(),
+            "load_for_config must not fail on real AGENTS.md"
+        );
+        let rule_set = result.unwrap();
+        // Must contain at least the embedded defaults.
+        assert!(
+            rule_set.has("governance.path.no_traversal"),
+            "embedded defaults must be merged in"
+        );
+        // Must have MORE rules than embedded defaults alone (parsed rules are present).
+        assert!(
+            rule_set.len() > embedded_defaults().len(),
+            "real AGENTS.md must contribute at least one rule beyond embedded defaults"
+        );
     }
 }

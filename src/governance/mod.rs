@@ -45,10 +45,11 @@
 //! ```
 
 pub mod loader;
+pub mod parser;
 pub mod rules;
 pub mod validator;
 
-pub use loader::{RuleSet, embedded_defaults, load_for_config, load_from_path};
+pub use loader::{RuleSet, embedded_defaults, load_for_config};
 pub use rules::{
     EnforcementLevel, GovernanceResult, GovernanceRule, GovernanceViolation, RuleSource,
 };
