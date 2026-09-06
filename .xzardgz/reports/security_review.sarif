@@ -10,7 +10,7 @@
             {
               "id": "secrets",
               "shortDescription": {
-                "text": "secrets - HIGH security issue"
+                "text": "secrets - CRITICAL security issue"
               }
             }
           ]
@@ -39,5 +39,4 @@
       ]
     }
   ]
-} ]
 }

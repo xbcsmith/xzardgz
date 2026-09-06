@@ -1046,11 +1046,15 @@ mod tests {
             1,
             "absolute violation finding must always be included despite high threshold"
         );
-        // The blended confidence must be lower than the raw AI confidence (0.9),
-        // because the AbsoluteViolation floors the static score to 0.0.
+        // AbsoluteViolation floors the static score to VIOLATION_FLOOR (0.0).
         assert!(
-            output.findings[0].confidence < 0.9,
-            "blended score must be lower than raw AI confidence for a violation finding"
+            output.findings[0].static_score.abs() < 1e-9,
+            "AbsoluteViolation must floor static_score to 0.0"
+        );
+        // Blended = 0.0 * (1 - 0.5) + 0.9 * 0.5 = 0.45.
+        assert!(
+            (output.findings[0].confidence - 0.45).abs() < 1e-9,
+            "blended must equal 0.0 * 0.5 + 0.9 * 0.5 = 0.45"
         );
     }
 
