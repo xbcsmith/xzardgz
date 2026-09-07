@@ -583,4 +583,51 @@ mod tests {
             PromptLoader::default().render("security_review", "system", &tera::Context::new());
         assert_eq!(raw, rendered.as_str());
     }
+
+    #[test]
+    fn test_render_with_file_based_malformed_tera_falls_back_to_embedded() {
+        // A file that exists but contains broken Tera syntax must not panic;
+        // the loader must warn and fall back to the embedded default.
+        // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("security_review");
+        // SAFETY: create_dir_all only fails on permission errors in test envs.
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        // Write syntactically invalid Tera so the render step fails.
+        std::fs::write(plugin_dir.join("system.tera"), "{% for unclosed bad syntax").unwrap();
+        let config = PromptsConfig {
+            directories: vec![tmp.path().to_str().unwrap().to_string()],
+            allow_overrides: true,
+        };
+        let loader = PromptLoader::new(config);
+        let result = loader.render("security_review", "system", &tera::Context::new());
+        assert!(
+            !result.is_empty(),
+            "malformed file override must fall back to the embedded default (non-empty)"
+        );
+        assert!(
+            result.to_lowercase().contains("security"),
+            "fallback must return the embedded security_review/system template content"
+        );
+    }
+
+    #[test]
+    fn test_render_with_configured_nonexistent_directory_falls_back_to_embedded() {
+        // A configured override directory that does not exist must not panic;
+        // the loader must silently skip it and return the embedded default.
+        let config = PromptsConfig {
+            directories: vec!["/tmp/xzardgz-test-this-directory-does-not-exist-12345".to_string()],
+            allow_overrides: true,
+        };
+        let loader = PromptLoader::new(config);
+        let result = loader.render("security_review", "system", &tera::Context::new());
+        assert!(
+            !result.is_empty(),
+            "a configured but nonexistent override directory must fall back to the embedded default"
+        );
+        assert!(
+            result.to_lowercase().contains("security"),
+            "fallback must return the embedded security_review/system template content"
+        );
+    }
 }

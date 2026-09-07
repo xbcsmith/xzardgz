@@ -457,4 +457,110 @@ mod tests {
             "technical_review template should contain 'architect', got: {output}"
         );
     }
+
+    #[tokio::test]
+    async fn test_execute_export_technical_review_template_is_valid_tera() {
+        // The exported technical_review/system.tera must also be parseable by Tera.
+        // SAFETY: tempdir() only fails if the OS cannot create a temp dir.
+        let tmp = tempfile::tempdir().unwrap();
+        execute(PromptsCommands::Export {
+            output_dir: Some(tmp.path().to_str().unwrap().to_string()),
+        })
+        .await
+        .unwrap();
+        let content =
+            std::fs::read_to_string(tmp.path().join("technical_review").join("system.tera"))
+                // SAFETY: the export step above writes this file; read failure means export is broken.
+                .unwrap();
+        assert!(
+            !content.is_empty(),
+            "exported technical_review/system.tera must not be empty"
+        );
+        let render_result = tera::Tera::one_off(&content, &tera::Context::new(), false);
+        assert!(
+            render_result.is_ok(),
+            "exported technical_review/system.tera must be valid Tera: {:?}",
+            render_result.err()
+        );
+    }
+
+    #[test]
+    fn test_render_with_fixed_context_produces_exact_output() {
+        // Asserts rendered output matches an exact expected string for a fixed context.
+        // This is the 2.4c requirement: a precise, not just keyword-presence, assertion.
+        use crate::config::PromptsConfig;
+        use crate::prompts::PromptLoader;
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert(
+            "security_review/system".to_string(),
+            "Plugin: {{ plugin_name }}.".to_string(),
+        );
+        let loader =
+            PromptLoader::new(PromptsConfig::default()).with_in_memory_overrides(overrides);
+        let mut ctx = tera::Context::new();
+        ctx.insert("plugin_name", &"security-review");
+        let result = loader.render("security_review", "system", &ctx);
+        assert_eq!(
+            result, "Plugin: security-review.",
+            "render with a fixed context must produce an exact expected string"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_export_then_edit_then_render_reflects_change() {
+        // 2.6b success criterion: exporting, editing, and re-running against the
+        // exported system prompt observably changes the output -- proving that the
+        // file-based override path is live end-to-end.
+        use crate::config::PromptsConfig;
+        use crate::prompts::PromptLoader;
+
+        // SAFETY: tempdir() only fails if the OS cannot create a temp dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let output_dir = tmp.path().to_str().unwrap().to_string();
+
+        // Step 1: Export embedded templates to disk.
+        execute(PromptsCommands::Export {
+            output_dir: Some(output_dir.clone()),
+        })
+        .await
+        // SAFETY: export to a writable tempdir cannot fail.
+        .unwrap();
+
+        // Confirm the file was written before editing.
+        let template_path = tmp.path().join("security_review").join("system.tera");
+        assert!(
+            template_path.exists(),
+            "exported file must exist before editing"
+        );
+
+        // Step 2: Edit the exported template.
+        let edited_content =
+            "EDITED SYSTEM PROMPT: this content differs from the embedded default.";
+        // SAFETY: template_path was just confirmed to exist.
+        std::fs::write(&template_path, edited_content).unwrap();
+
+        // Step 3: Create a PromptLoader pointing at the export directory.
+        let config = PromptsConfig {
+            directories: vec![output_dir],
+            allow_overrides: true,
+        };
+        let loader = PromptLoader::new(config);
+
+        // Step 4: Render -- must return the EDITED content, not the embedded default.
+        let result = loader.render("security_review", "system", &tera::Context::new());
+        assert_eq!(
+            result, edited_content,
+            "render must return the edited on-disk template, not the embedded default"
+        );
+
+        // Step 5: Confirm the result differs from the embedded default.
+        let embedded = PromptLoader::embedded_raw("security_review", "system")
+            // SAFETY: security_review/system is a known registered template.
+            .unwrap();
+        assert_ne!(
+            result.as_str(),
+            embedded,
+            "edited template must differ from the compiled-in embedded default"
+        );
+    }
 }
