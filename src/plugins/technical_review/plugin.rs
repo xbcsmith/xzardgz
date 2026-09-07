@@ -42,6 +42,8 @@ use super::finding::TechnicalReviewFinding;
 use super::prioritizer::FilePrioritizer;
 use super::report::{TechnicalReviewJsonReport, TechnicalReviewMarkdownReport};
 
+use crate::clients::{ExternalSignals, repodata::resolve_repodata, scorecard::resolve_scorecard};
+
 use std::sync::Arc;
 
 use crate::agent::context::AgentContext;
@@ -131,6 +133,64 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
             return Ok(PluginOutput::success("technical review disabled"));
         }
 
+        // Resolve external supply-chain signals when the plugin is enabled.
+        // The workspace root for local override files is the repository checkout
+        // path when available, or the pipeline workspace directory as fallback.
+        let workspace_root: String = ctx
+            .state
+            .local_repository_path
+            .clone()
+            .unwrap_or_else(|| ctx.workspace.paths.root.to_string_lossy().into_owned());
+
+        let repo_slug: Option<String> = ctx
+            .scan_result
+            .repository_url
+            .clone()
+            .or_else(|| ctx.scan_result.repository_name.clone());
+
+        let scorecard = if config.scorecard_enabled {
+            if let Some(ref repo) = repo_slug {
+                match resolve_scorecard(repo, &workspace_root).await {
+                    Ok(sc) => Some(sc),
+                    Err(e) => {
+                        ctx.add_diagnostic(Diagnostic::warning(
+                            DiagnosticCategory::Plugin,
+                            format!("technical-review: scorecard resolution failed: {e}"),
+                        ));
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let repodata = if config.repodata_enabled {
+            if let Some(ref repo) = repo_slug {
+                match resolve_repodata(repo, &workspace_root).await {
+                    Ok(rd) => Some(rd),
+                    Err(e) => {
+                        ctx.add_diagnostic(Diagnostic::warning(
+                            DiagnosticCategory::Plugin,
+                            format!("technical-review: repodata resolution failed: {e}"),
+                        ));
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let external_signals = ExternalSignals {
+            scorecard,
+            repodata,
+        };
+
         // Step 3: Prioritize files from the scan result.
         let prioritized_files = FilePrioritizer::capped_flat_list(
             &ctx.scan_result,
@@ -182,8 +242,12 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         // WatcherResultMessage.diagnostics.
         let parsed_findings: Vec<TechnicalReviewFinding> = match strategy {
             InvestigationStrategy::SingleSession => {
-                let user_prompt =
-                    build_user_prompt(&ctx.scan_result, &prioritized_files, &dimensions);
+                let user_prompt = build_user_prompt(
+                    &ctx.scan_result,
+                    &prioritized_files,
+                    &dimensions,
+                    Some(&external_signals),
+                );
                 let session = ctx.build_agent_session(system_prompt, 8192, turn_budget as usize)?;
                 match session.run(&user_prompt).await {
                     Ok(content) => parse_ai_response(&content, &dimensions),
@@ -204,6 +268,10 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
                     system_prompt,
                     scan_result: ctx.scan_result.clone(),
                     dimensions: dimensions.clone(),
+                    external_signals: ExternalSignals {
+                        scorecard: external_signals.scorecard.clone(),
+                        repodata: external_signals.repodata.clone(),
+                    },
                 };
                 let runner = BatchedInvestigationRunner::new(batch_session, batch_config);
                 let outcome = runner.run(&scope, turn_budget).await;
@@ -288,12 +356,13 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         let md_path = reports_dir.join("technical_review.md");
         let json_path = reports_dir.join("technical_review.json");
 
-        if let Err(e) = TechnicalReviewMarkdownReport::write(
+        if let Err(e) = TechnicalReviewMarkdownReport::write_with_signals(
             &raw_findings,
             &ctx.scan_result,
             &workspace_id,
             risk_band,
             &md_path,
+            Some(&external_signals),
         ) {
             ctx.add_diagnostic(Diagnostic::warning(
                 DiagnosticCategory::Plugin,
@@ -356,11 +425,13 @@ fn build_reports_dir(ctx: &PluginContext) -> PathBuf {
     }
 }
 
-/// Builds the user-facing prompt from scan metadata, prioritized files, and dimensions.
+/// Builds the user-facing prompt from scan metadata, prioritized files, dimensions, and
+/// optional external supply-chain signals.
 fn build_user_prompt(
     scan_result: &crate::scanner::result::ScanResult,
     prioritized_files: &[String],
     dimensions: &[ReviewDimension],
+    signals: Option<&ExternalSignals>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -398,6 +469,45 @@ fn build_user_prompt(
     }
 
     prompt.push('\n');
+
+    // Append external supply-chain context when available.
+    if let Some(sig) = signals {
+        if let Some(sc) = &sig.scorecard {
+            prompt.push('\n');
+            prompt.push_str(&format!("OpenSSF Scorecard score: {:.1}/10\n", sc.score));
+            let weak_checks: Vec<String> = sc
+                .checks
+                .iter()
+                .filter(|c| c.score < 5)
+                .map(|c| format!("  - {} (score {}): {}", c.name, c.score, c.reason))
+                .collect();
+            if !weak_checks.is_empty() {
+                prompt.push_str("Low-scoring Scorecard checks:\n");
+                for line in &weak_checks {
+                    prompt.push_str(line);
+                    prompt.push('\n');
+                }
+            }
+        }
+        if let Some(rd) = &sig.repodata {
+            prompt.push('\n');
+            if rd.archived {
+                prompt.push_str("Note: This repository is archived.\n");
+            }
+            if rd.fork {
+                prompt.push_str("Note: This repository is a fork.\n");
+            }
+            if !rd.topics.is_empty() {
+                prompt.push_str(&format!("Repository topics: {}\n", rd.topics.join(", ")));
+            }
+            if let Some(ref lang) = rd.language
+                && scan_result.primary_language.is_none()
+            {
+                prompt.push_str(&format!("Primary language (from GitHub): {}\n", lang));
+            }
+        }
+    }
+
     prompt.push_str("Provide your technical review findings.\n");
 
     prompt
@@ -477,6 +587,8 @@ struct TechnicalReviewBatchSession {
     scan_result: crate::scanner::result::ScanResult,
     /// Active review dimensions for the user prompt.
     dimensions: Vec<ReviewDimension>,
+    /// External supply-chain signals forwarded from the plugin run.
+    external_signals: ExternalSignals,
 }
 
 #[async_trait::async_trait]
@@ -503,7 +615,12 @@ impl BatchSession for TechnicalReviewBatchSession {
         turn_budget: u32,
     ) -> std::result::Result<BatchOutcome, InvestigationError> {
         let files: Vec<String> = batch.scope.paths();
-        let user_prompt = build_user_prompt(&self.scan_result, &files, &self.dimensions);
+        let user_prompt = build_user_prompt(
+            &self.scan_result,
+            &files,
+            &self.dimensions,
+            Some(&self.external_signals),
+        );
         let context = AgentContext::new(self.system_prompt.clone(), 8192);
         let session = AgentSession::new(Arc::clone(&self.provider), context, ToolRegistry::new())
             .with_max_turns(turn_budget as usize);
@@ -808,7 +925,7 @@ mod tests {
     fn test_build_user_prompt_contains_repo_name() {
         let scan = empty_scan();
         let dims = vec![ReviewDimension::Architecture];
-        let prompt = build_user_prompt(&scan, &[], &dims);
+        let prompt = build_user_prompt(&scan, &[], &dims, None);
         assert!(prompt.contains("test-repo"), "must contain repo name");
     }
 
@@ -816,7 +933,7 @@ mod tests {
     fn test_build_user_prompt_contains_primary_language() {
         let scan = empty_scan();
         let dims = vec![ReviewDimension::Architecture];
-        let prompt = build_user_prompt(&scan, &[], &dims);
+        let prompt = build_user_prompt(&scan, &[], &dims, None);
         assert!(prompt.contains("Rust"), "must contain primary language");
     }
 
@@ -827,7 +944,7 @@ mod tests {
             ReviewDimension::Architecture,
             ReviewDimension::ErrorHandling,
         ];
-        let prompt = build_user_prompt(&scan, &[], &dims);
+        let prompt = build_user_prompt(&scan, &[], &dims, None);
         assert!(prompt.contains("architecture"), "must contain architecture");
         assert!(
             prompt.contains("error_handling"),
@@ -840,7 +957,7 @@ mod tests {
         let scan = empty_scan();
         let files = vec!["src/main.rs".to_string(), "src/lib.rs".to_string()];
         let dims = vec![ReviewDimension::Architecture];
-        let prompt = build_user_prompt(&scan, &files, &dims);
+        let prompt = build_user_prompt(&scan, &files, &dims, None);
         assert!(prompt.contains("src/main.rs"), "must list main.rs");
         assert!(prompt.contains("src/lib.rs"), "must list lib.rs");
     }
@@ -849,7 +966,7 @@ mod tests {
     fn test_build_user_prompt_empty_files_shows_placeholder() {
         let scan = empty_scan();
         let dims = vec![ReviewDimension::Architecture];
-        let prompt = build_user_prompt(&scan, &[], &dims);
+        let prompt = build_user_prompt(&scan, &[], &dims, None);
         assert!(
             prompt.contains("none identified"),
             "must show placeholder for empty file list"

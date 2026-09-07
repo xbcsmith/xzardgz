@@ -27,6 +27,8 @@ use crate::scanner::result::ScanResult;
 use super::dimensions::ReviewDimension;
 use super::finding::TechnicalReviewFinding;
 
+use crate::clients::ExternalSignals;
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
@@ -318,6 +320,180 @@ impl TechnicalReviewMarkdownReport {
         std::fs::write(path, markdown)?;
         Ok(())
     }
+
+    /// Renders a Markdown technical review document with an optional supply-chain
+    /// signals section appended after the confidence section.
+    ///
+    /// Calls [`TechnicalReviewMarkdownReport::render`] for the main body and
+    /// appends a "Supply Chain Signals" section when `signals` is `Some` and
+    /// non-empty.
+    ///
+    /// # Arguments
+    ///
+    /// * `findings`     - Slice of [`TechnicalReviewFinding`] to include.
+    /// * `scan_result`  - Repository scan metadata for provenance and summary.
+    /// * `workspace_id` - Workspace identifier to embed in the document.
+    /// * `risk_band`    - Overall risk classification, if computed.
+    /// * `signals`      - Optional external supply-chain signals. When `None`
+    ///   or empty, the section is omitted.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<String>` containing the Markdown document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Report`] if string formatting fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::plugins::technical_review::report::TechnicalReviewMarkdownReport;
+    /// use xzardgz::clients::ExternalSignals;
+    /// use xzardgz::scanner::result::{ScanResult, PluginPreselection, SCAN_RESULT_VERSION};
+    /// use chrono::Utc;
+    /// use std::collections::HashMap;
+    ///
+    /// let scan = ScanResult {
+    ///     version: SCAN_RESULT_VERSION.to_string(),
+    ///     repository_url: None,
+    ///     repository_name: Some("my-repo".to_string()),
+    ///     head_commit: None,
+    ///     scan_timestamp: Utc::now(),
+    ///     repository_structure: vec![],
+    ///     language_statistics: HashMap::new(),
+    ///     primary_language: None,
+    ///     frameworks: vec![],
+    ///     documentation_inventory: vec![],
+    ///     governance_rules: vec![],
+    ///     cli_commands: vec![],
+    ///     public_apis: vec![],
+    ///     entrypoints: vec![],
+    ///     config_surface: vec![],
+    ///     key_files: vec![],
+    ///     dependency_manifests: vec![],
+    ///     test_files: vec![],
+    ///     build_files: vec![],
+    ///     security_relevant_files: vec![],
+    ///     findings: vec![],
+    ///     plugin_preselection: PluginPreselection::default(),
+    /// };
+    /// let signals = ExternalSignals { scorecard: None, repodata: None };
+    /// let md = TechnicalReviewMarkdownReport::render_with_signals(
+    ///     &[], &scan, "ws-001", None, Some(&signals)
+    /// ).unwrap();
+    /// assert!(md.contains("# Technical Review Report"));
+    /// ```
+    pub fn render_with_signals(
+        findings: &[TechnicalReviewFinding],
+        scan_result: &ScanResult,
+        workspace_id: &str,
+        risk_band: Option<RiskBand>,
+        signals: Option<&ExternalSignals>,
+    ) -> Result<String> {
+        let mut doc = Self::render(findings, scan_result, workspace_id, risk_band)?;
+        if let Some(sig) = signals
+            && !sig.is_empty()
+        {
+            render_signals_section(&mut doc, sig)?;
+        }
+        Ok(doc)
+    }
+
+    /// Renders the Markdown report with optional supply-chain signals and writes
+    /// it to `path`.
+    ///
+    /// Parent directories are created automatically.
+    ///
+    /// # Arguments
+    ///
+    /// * `findings`     - Slice of [`TechnicalReviewFinding`] to include.
+    /// * `scan_result`  - Repository scan metadata.
+    /// * `workspace_id` - Workspace identifier.
+    /// * `risk_band`    - Overall risk classification, if computed.
+    /// * `path`         - Destination file path.
+    /// * `signals`      - Optional external supply-chain signals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Report`] if the path is invalid or rendering
+    /// fails, or [`PipelineError::Io`] for I/O errors.
+    pub fn write_with_signals(
+        findings: &[TechnicalReviewFinding],
+        scan_result: &ScanResult,
+        workspace_id: &str,
+        risk_band: Option<RiskBand>,
+        path: &Path,
+        signals: Option<&ExternalSignals>,
+    ) -> Result<()> {
+        validate_report_path(path)?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let markdown =
+            Self::render_with_signals(findings, scan_result, workspace_id, risk_band, signals)?;
+        std::fs::write(path, markdown)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supply-chain signals section renderer
+// ---------------------------------------------------------------------------
+
+/// Appends a "Supply Chain Signals" Markdown section to `doc`.
+///
+/// Writes Scorecard score and per-check table if scorecard data is present,
+/// and a metadata list if repository metadata is present.
+fn render_signals_section(doc: &mut String, signals: &ExternalSignals) -> Result<()> {
+    writeln!(doc, "## Supply Chain Signals").map_err(fmt_err)?;
+    writeln!(doc).map_err(fmt_err)?;
+
+    if let Some(sc) = &signals.scorecard {
+        writeln!(doc, "### OpenSSF Scorecard").map_err(fmt_err)?;
+        writeln!(doc).map_err(fmt_err)?;
+        writeln!(doc, "Score: {:.1}/10", sc.score).map_err(fmt_err)?;
+        writeln!(doc).map_err(fmt_err)?;
+        if !sc.checks.is_empty() {
+            writeln!(doc, "| Check | Score | Reason |").map_err(fmt_err)?;
+            writeln!(doc, "|-------|-------|--------|").map_err(fmt_err)?;
+            for check in &sc.checks {
+                let reason = check.reason.replace('|', "\\|");
+                writeln!(doc, "| {} | {} | {} |", check.name, check.score, reason)
+                    .map_err(fmt_err)?;
+            }
+            writeln!(doc).map_err(fmt_err)?;
+        }
+    }
+
+    if let Some(rd) = &signals.repodata {
+        writeln!(doc, "### Repository Metadata").map_err(fmt_err)?;
+        writeln!(doc).map_err(fmt_err)?;
+        writeln!(doc, "- Full name: {}", rd.full_name).map_err(fmt_err)?;
+        if let Some(ref desc) = rd.description {
+            writeln!(doc, "- Description: {}", desc).map_err(fmt_err)?;
+        }
+        if let Some(ref lang) = rd.language {
+            writeln!(doc, "- Language: {}", lang).map_err(fmt_err)?;
+        }
+        writeln!(doc, "- Default branch: {}", rd.default_branch).map_err(fmt_err)?;
+        writeln!(doc, "- Stars: {}", rd.stargazers_count).map_err(fmt_err)?;
+        writeln!(doc, "- Forks: {}", rd.forks_count).map_err(fmt_err)?;
+        writeln!(doc, "- Open issues: {}", rd.open_issues_count).map_err(fmt_err)?;
+        writeln!(doc, "- Archived: {}", rd.archived).map_err(fmt_err)?;
+        writeln!(doc, "- Fork: {}", rd.fork).map_err(fmt_err)?;
+        if !rd.topics.is_empty() {
+            writeln!(doc, "- Topics: {}", rd.topics.join(", ")).map_err(fmt_err)?;
+        }
+        if let Some(ref license) = rd.license {
+            writeln!(doc, "- License: {}", license.name).map_err(fmt_err)?;
+        }
+        writeln!(doc).map_err(fmt_err)?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -730,5 +906,167 @@ mod tests {
         let result =
             TechnicalReviewJsonReport::write(&[], &scan, "ws-001", "r-001", None, Path::new("/"));
         assert!(result.is_err(), "invalid path must return error");
+    }
+
+    // ------------------------------------------------------------------
+    // TechnicalReviewMarkdownReport::render_with_signals
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_render_with_signals_none_produces_same_as_render() {
+        let scan = minimal_scan();
+        let with =
+            TechnicalReviewMarkdownReport::render_with_signals(&[], &scan, "ws-1", None, None)
+                .unwrap();
+        let without = TechnicalReviewMarkdownReport::render(&[], &scan, "ws-1", None).unwrap();
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn test_render_with_signals_empty_signals_produces_same_as_render() {
+        use crate::clients::ExternalSignals;
+        let scan = minimal_scan();
+        let signals = ExternalSignals {
+            scorecard: None,
+            repodata: None,
+        };
+        let with = TechnicalReviewMarkdownReport::render_with_signals(
+            &[],
+            &scan,
+            "ws-1",
+            None,
+            Some(&signals),
+        )
+        .unwrap();
+        let without = TechnicalReviewMarkdownReport::render(&[], &scan, "ws-1", None).unwrap();
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn test_render_with_signals_scorecard_appends_section() {
+        use crate::clients::ExternalSignals;
+        use crate::clients::scorecard::{ScorecardCheck, ScorecardRepoInfo, ScorecardResult};
+        let scan = minimal_scan();
+        let signals = ExternalSignals {
+            scorecard: Some(ScorecardResult {
+                date: "2024-01-01".to_string(),
+                repo: ScorecardRepoInfo {
+                    name: "github.com/ossf/scorecard".to_string(),
+                    commit: None,
+                },
+                score: 7.8,
+                checks: vec![ScorecardCheck {
+                    name: "Binary-Artifacts".to_string(),
+                    score: 10,
+                    reason: "no binaries found".to_string(),
+                    details: vec![],
+                    documentation: None,
+                }],
+            }),
+            repodata: None,
+        };
+        let md = TechnicalReviewMarkdownReport::render_with_signals(
+            &[],
+            &scan,
+            "ws-1",
+            None,
+            Some(&signals),
+        )
+        .unwrap();
+        assert!(md.contains("## Supply Chain Signals"));
+        assert!(md.contains("### OpenSSF Scorecard"));
+        assert!(md.contains("7.8/10"));
+        assert!(md.contains("Binary-Artifacts"));
+    }
+
+    #[test]
+    fn test_render_with_signals_repodata_appends_metadata() {
+        use crate::clients::ExternalSignals;
+        use crate::clients::repodata::RepoMetadata;
+        let scan = minimal_scan();
+        let signals = ExternalSignals {
+            scorecard: None,
+            repodata: Some(RepoMetadata {
+                full_name: "ossf/scorecard".to_string(),
+                description: Some("a security tool".to_string()),
+                language: Some("Go".to_string()),
+                default_branch: "main".to_string(),
+                stargazers_count: 4200,
+                forks_count: 300,
+                open_issues_count: 12,
+                topics: vec!["security".to_string()],
+                archived: false,
+                fork: false,
+                visibility: Some("public".to_string()),
+                size: 5000,
+                license: None,
+                pushed_at: None,
+                updated_at: None,
+            }),
+        };
+        let md = TechnicalReviewMarkdownReport::render_with_signals(
+            &[],
+            &scan,
+            "ws-1",
+            None,
+            Some(&signals),
+        )
+        .unwrap();
+        assert!(md.contains("### Repository Metadata"));
+        assert!(md.contains("ossf/scorecard"));
+        assert!(md.contains("4200"));
+        assert!(md.contains("security"));
+    }
+
+    // ------------------------------------------------------------------
+    // TechnicalReviewMarkdownReport::write_with_signals
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_write_with_signals_none_creates_file() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let path = tmp.path().join("report.md");
+        TechnicalReviewMarkdownReport::write_with_signals(
+            &[],
+            &minimal_scan(),
+            "ws-1",
+            None,
+            &path,
+            None,
+        )
+        .unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_write_with_signals_with_scorecard_includes_section() {
+        use crate::clients::ExternalSignals;
+        use crate::clients::scorecard::{ScorecardRepoInfo, ScorecardResult};
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let path = tmp.path().join("report.md");
+        let signals = ExternalSignals {
+            scorecard: Some(ScorecardResult {
+                date: "2024-01-01".to_string(),
+                repo: ScorecardRepoInfo {
+                    name: "github.com/test/repo".to_string(),
+                    commit: None,
+                },
+                score: 5.0,
+                checks: vec![],
+            }),
+            repodata: None,
+        };
+        TechnicalReviewMarkdownReport::write_with_signals(
+            &[],
+            &minimal_scan(),
+            "ws-1",
+            None,
+            &path,
+            Some(&signals),
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## Supply Chain Signals"));
+        assert!(content.contains("5.0/10"));
     }
 }

@@ -629,6 +629,27 @@ pub struct TechnicalReviewConfig {
     /// When `None`, the default of `4` is used.
     #[serde(default)]
     pub investigation_batch_count: Option<u32>,
+    /// Whether to attempt OpenSSF Scorecard resolution for supply-chain signal.
+    ///
+    /// When `true`, [`resolve_scorecard`] is called during each `technical-review`
+    /// plugin run. Resolution checks a local `scorecard.json` file at the
+    /// repository root first, then falls back to the public OpenSSF Scorecard
+    /// REST API. Defaults to `true`.
+    ///
+    /// [`resolve_scorecard`]: crate::clients::scorecard::resolve_scorecard
+    #[serde(default = "default_true")]
+    pub scorecard_enabled: bool,
+    /// Whether to attempt GitHub repository metadata resolution.
+    ///
+    /// When `true`, [`resolve_repodata`] is called during each `technical-review`
+    /// plugin run. Resolution checks a local `repodata.json` file at the
+    /// repository root first, then falls back to the GitHub REST API. Set
+    /// `GITHUB_TOKEN` in the environment for authenticated requests.
+    /// Defaults to `true`.
+    ///
+    /// [`resolve_repodata`]: crate::clients::repodata::resolve_repodata
+    #[serde(default = "default_true")]
+    pub repodata_enabled: bool,
 }
 
 fn default_agent_max_turns() -> u32 {
@@ -694,6 +715,8 @@ impl Default for TechnicalReviewConfig {
             investigation_threshold_files: None,
             investigation_threshold_bytes: None,
             investigation_batch_count: None,
+            scorecard_enabled: default_true(),
+            repodata_enabled: default_true(),
         }
     }
 }
@@ -1488,6 +1511,18 @@ mod tests {
     fn test_technical_review_config_investigation_batch_count_defaults_to_none() {
         let cfg = TechnicalReviewConfig::default();
         assert!(cfg.investigation_batch_count.is_none());
+    }
+
+    #[test]
+    fn test_technical_review_config_scorecard_enabled_defaults_to_true() {
+        let cfg = TechnicalReviewConfig::default();
+        assert!(cfg.scorecard_enabled);
+    }
+
+    #[test]
+    fn test_technical_review_config_repodata_enabled_defaults_to_true() {
+        let cfg = TechnicalReviewConfig::default();
+        assert!(cfg.repodata_enabled);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod cli;
+pub mod clients;
 pub mod commands;
 pub mod config;
 pub mod diagnostics;
