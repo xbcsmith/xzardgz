@@ -42,6 +42,21 @@ use super::finding::TechnicalReviewFinding;
 use super::prioritizer::FilePrioritizer;
 use super::report::{TechnicalReviewJsonReport, TechnicalReviewMarkdownReport};
 
+use std::sync::Arc;
+
+use crate::agent::context::AgentContext;
+use crate::agent::session::AgentSession;
+use crate::diagnostics::Diagnostics;
+use crate::investigation::batch::{
+    BatchOutcome, BatchSession, BatchedInvestigationRunner, InvestigationBatch, InvestigationError,
+};
+use crate::investigation::scope::{FileMatchEntry, InvestigationScope, ScopeMetrics};
+use crate::investigation::strategy::{
+    InvestigationStrategy, compute_turn_budget, decide_investigation_strategy,
+};
+use crate::providers::base::Provider;
+use crate::tools::registry::ToolRegistry;
+
 // ---------------------------------------------------------------------------
 // Default prompts
 // ---------------------------------------------------------------------------
@@ -164,23 +179,71 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
             .cloned()
             .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
-        let user_prompt = build_user_prompt(&ctx.scan_result, &prioritized_files, &dimensions);
+        // Step 6: Compute the turn budget and select the investigation strategy.
+        //
+        // The turn budget is derived from the repository's matched-file count
+        // and total size via `compute_turn_budget`, replacing the static
+        // `config.agent_max_turns` cap.  `decide_investigation_strategy`
+        // selects either a single-session or batched-session execution plan
+        // based on the configurable threshold fields.
+        let metrics = ScopeMetrics::from_scan_result(&ctx.scan_result);
+        let turn_budget = compute_turn_budget(&metrics);
+        let threshold_files = config.investigation_threshold_files.unwrap_or(20);
+        let threshold_bytes = config.investigation_threshold_bytes.unwrap_or(10_000_000);
+        let batch_count = config.investigation_batch_count.unwrap_or(4) as usize;
+        let strategy =
+            decide_investigation_strategy(&metrics, threshold_files, threshold_bytes, batch_count);
 
-        // Step 6: Build the agent session and run the multi-turn analysis.
-        // Returns a hard error when the provider does not support tool calling.
-        let session =
-            ctx.build_agent_session(system_prompt, 8192, config.agent_max_turns as usize)?;
-        let response_content = match session.run(&user_prompt).await {
-            Ok(content) => content,
-            Err(e) => {
-                return Ok(PluginOutput::failure(format!(
-                    "technical-review: agent session failed: {e}"
-                )));
+        // Step 7: Run AI analysis — single session or batched sessions.
+        //
+        // For SingleSession the computed turn_budget replaces the static
+        // config.agent_max_turns value.  For BatchedSession a
+        // TechnicalReviewBatchSession drives each batch independently via
+        // BatchedInvestigationRunner; exhausted-batch diagnostics are drained
+        // into the plugin context so they appear in the report output and in
+        // WatcherResultMessage.diagnostics.
+        let parsed_findings: Vec<TechnicalReviewFinding> = match strategy {
+            InvestigationStrategy::SingleSession => {
+                let user_prompt =
+                    build_user_prompt(&ctx.scan_result, &prioritized_files, &dimensions);
+                let session = ctx.build_agent_session(system_prompt, 8192, turn_budget as usize)?;
+                match session.run(&user_prompt).await {
+                    Ok(content) => parse_ai_response(&content, &dimensions),
+                    Err(e) => {
+                        return Ok(PluginOutput::failure(format!(
+                            "technical-review: agent session failed: {e}"
+                        )));
+                    }
+                }
+            }
+            InvestigationStrategy::BatchedSession(batch_config) => {
+                let mut scope = InvestigationScope::new();
+                for f in &prioritized_files {
+                    scope.insert(FileMatchEntry::new(f));
+                }
+                let batch_session = TechnicalReviewBatchSession {
+                    provider: Arc::clone(&ctx.provider),
+                    system_prompt,
+                    scan_result: ctx.scan_result.clone(),
+                    dimensions: dimensions.clone(),
+                };
+                let runner = BatchedInvestigationRunner::new(batch_session, batch_config);
+                let outcome = runner.run(&scope, turn_budget).await;
+                // Drain exhausted-batch diagnostics into the plugin context so
+                // they surface in the plugin's report output and, when run via
+                // the watcher path, in WatcherResultMessage.diagnostics.
+                for diag in outcome.diagnostics.entries {
+                    ctx.add_diagnostic(diag);
+                }
+                // Parse each batch's raw AI response into typed findings and
+                // merge them into a single list.
+                outcome
+                    .findings
+                    .iter()
+                    .flat_map(|raw| parse_ai_response(raw, &dimensions))
+                    .collect()
             }
         };
-
-        // Step 7: Parse findings from the response.
-        let parsed_findings = parse_ai_response(&response_content, &dimensions);
 
         // Step 8: Score each finding and filter by blended confidence.
         let scoring_cfg = ScoringConfig {
@@ -415,6 +478,84 @@ fn extract_json(content: &str) -> &str {
     trimmed
 }
 
+// ---------------------------------------------------------------------------
+// TechnicalReviewBatchSession
+// ---------------------------------------------------------------------------
+
+/// A [`BatchSession`] implementation for the technical review plugin.
+///
+/// Each call to [`BatchSession::run`] creates a fresh [`AgentSession`] scoped
+/// to the files in the supplied [`InvestigationBatch`] and runs the technical
+/// review analysis on those files only.  This is the concrete session type
+/// supplied to [`BatchedInvestigationRunner`] when
+/// [`decide_investigation_strategy`] selects
+/// [`InvestigationStrategy::BatchedSession`].
+struct TechnicalReviewBatchSession {
+    /// AI provider shared across all batch sessions.
+    provider: Arc<dyn Provider + Send + Sync>,
+    /// System prompt pre-seeded into every batch session's context.
+    system_prompt: String,
+    /// Scan result supplying repository context to the user prompt.
+    scan_result: crate::scanner::result::ScanResult,
+    /// Active review dimensions for the user prompt.
+    dimensions: Vec<ReviewDimension>,
+}
+
+#[async_trait::async_trait]
+impl BatchSession for TechnicalReviewBatchSession {
+    /// Runs the technical review AI analysis for a single batch.
+    ///
+    /// Builds a user prompt from the batch's file paths, creates a fresh
+    /// [`AgentSession`] with `turn_budget` as the turn limit, and runs the
+    /// session.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(BatchOutcome)` on success, where `findings` contains the single
+    /// raw AI response string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvestigationError::TurnBudgetExceeded`] when the session
+    /// reports `"max turns reached"`.  Returns [`InvestigationError::BatchFailed`]
+    /// for any other session failure.
+    async fn run(
+        &self,
+        batch: &InvestigationBatch,
+        turn_budget: u32,
+    ) -> std::result::Result<BatchOutcome, InvestigationError> {
+        let files: Vec<String> = batch.scope.paths();
+        let user_prompt = build_user_prompt(&self.scan_result, &files, &self.dimensions);
+        let context = AgentContext::new(self.system_prompt.clone(), 8192);
+        let session = AgentSession::new(Arc::clone(&self.provider), context, ToolRegistry::new())
+            .with_max_turns(turn_budget as usize);
+        match session.run(&user_prompt).await {
+            Ok(content) => Ok(BatchOutcome {
+                batch_index: batch.index,
+                total_batches: batch.total_batches,
+                findings: vec![content],
+                diagnostics: Diagnostics::new(),
+                turn_budget_exhausted: false,
+            }),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("max turns reached") {
+                    Err(InvestigationError::TurnBudgetExceeded {
+                        batch_index: batch.index,
+                        turn_limit: turn_budget,
+                        partial_findings: vec![],
+                    })
+                } else {
+                    Err(InvestigationError::BatchFailed {
+                        batch_index: batch.index,
+                        message: msg,
+                    })
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 /// Filters findings to those at or above the minimum severity threshold.
 ///
@@ -441,6 +582,10 @@ mod tests {
     use crate::config::{Config, GovernanceConfig, TechnicalReviewConfig};
     use crate::error::PipelineError;
     use crate::governance::GovernanceChecker;
+    use crate::investigation::scope::ScopeMetrics;
+    use crate::investigation::strategy::{
+        InvestigationStrategy, compute_turn_budget, decide_investigation_strategy,
+    };
     use crate::plugins::context::PluginContext;
     use crate::providers::base::MockProvider;
     use crate::providers::types::{
@@ -1154,6 +1299,113 @@ mod tests {
         assert!(
             (blended - static_s).abs() < 1e-9,
             "blended must equal static when AI is disabled"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 1.3 / 2.3: investigation strategy wiring
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_technical_review_plugin_scope_metrics_derive_from_scan_result() {
+        // Verify ScopeMetrics is correctly derived from the plugin's scan result.
+        let scan = empty_scan();
+        let metrics = ScopeMetrics::from_scan_result(&scan);
+        assert_eq!(metrics.total_files, 0);
+        assert_eq!(metrics.total_size_bytes, 0);
+        assert_eq!(metrics.matched_file_count, 0);
+    }
+
+    #[test]
+    fn test_technical_review_plugin_compute_turn_budget_returns_at_least_base_turns() {
+        // compute_turn_budget must return at least BASE_TURNS (5) for any input.
+        let scan = empty_scan();
+        let metrics = ScopeMetrics::from_scan_result(&scan);
+        let budget = compute_turn_budget(&metrics);
+        assert!(
+            budget >= 5,
+            "turn budget must be >= BASE_TURNS (5), got {budget}"
+        );
+    }
+
+    #[test]
+    fn test_technical_review_plugin_strategy_is_single_session_for_empty_scan() {
+        // Empty scan -> all metrics are zero -> threshold not exceeded -> SingleSession.
+        let scan = empty_scan();
+        let metrics = ScopeMetrics::from_scan_result(&scan);
+        let strategy = decide_investigation_strategy(&metrics, 20, 10_000_000, 4);
+        assert!(
+            matches!(strategy, InvestigationStrategy::SingleSession),
+            "empty scan must yield SingleSession strategy"
+        );
+    }
+
+    #[test]
+    fn test_technical_review_plugin_zero_threshold_forces_batched_strategy() {
+        // threshold_files=0 combined with matched_file_count=1 must yield BatchedSession.
+        let metrics = ScopeMetrics::new(0, 0, 1);
+        let strategy = decide_investigation_strategy(&metrics, 0, u64::MAX, 4);
+        assert!(
+            matches!(strategy, InvestigationStrategy::BatchedSession(_)),
+            "matched_file_count > threshold_files must yield BatchedSession"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_technical_review_plugin_run_with_single_session_strategy_completes() {
+        // End-to-end test: plugin runs successfully with default (SingleSession)
+        // strategy for an empty scan, confirming the strategy wiring runs without error.
+        use crate::config::TechnicalReviewConfig;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> =
+            Arc::new(make_tool_calling_provider("{\"findings\":[]}"));
+        let ctx = make_context_with_config(
+            tmp.path().to_str().unwrap(),
+            empty_scan(),
+            Some(TechnicalReviewConfig {
+                enabled: true,
+                investigation_threshold_files: None, // default -> SingleSession
+                investigation_threshold_bytes: None,
+                investigation_batch_count: None,
+                ..TechnicalReviewConfig::default()
+            }),
+            provider,
+        );
+        let output = TechnicalReviewPlugin.run(ctx).await.unwrap();
+        assert!(
+            output.completed,
+            "plugin run must complete with single-session strategy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_technical_review_plugin_run_with_batched_strategy_empty_scope_completes() {
+        // When threshold_files=0 forces BatchedSession but the file list is empty,
+        // the runner returns an empty outcome and the plugin completes without findings.
+        use crate::config::TechnicalReviewConfig;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> =
+            Arc::new(make_tool_calling_provider("{\"findings\":[]}"));
+        let ctx = make_context_with_config(
+            tmp.path().to_str().unwrap(),
+            empty_scan(),
+            Some(TechnicalReviewConfig {
+                enabled: true,
+                investigation_threshold_files: Some(0), // force BatchedSession
+                investigation_threshold_bytes: Some(0),
+                investigation_batch_count: Some(2),
+                ..TechnicalReviewConfig::default()
+            }),
+            provider,
+        );
+        let output = TechnicalReviewPlugin.run(ctx).await.unwrap();
+        assert!(
+            output.completed,
+            "plugin with batched strategy and empty scope must complete"
         );
     }
 
