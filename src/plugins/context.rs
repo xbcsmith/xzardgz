@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::error::{PipelineError, Result};
 use crate::governance::GovernanceChecker;
+use crate::prompts::PromptLoader;
 use crate::providers::base::Provider;
 use crate::providers::types::Message;
 use crate::scanner::result::ScanResult;
@@ -70,7 +71,8 @@ pub enum ToolAccessLevel {
 ///
 /// Use [`PluginContext::new`] to create an instance, and the builder methods
 /// [`with_watcher_task_id`][Self::with_watcher_task_id] and
-/// [`with_prompts`][Self::with_prompts] to attach optional data.
+/// [`with_prompts`][Self::with_prompts] to attach optional in-memory prompt
+/// overrides.
 pub struct PluginContext {
     /// Effective pipeline configuration.
     pub config: Arc<Config>,
@@ -90,8 +92,9 @@ pub struct PluginContext {
     pub diagnostics: Diagnostics,
     /// Watcher task identifier, if this run was triggered by a watcher message.
     pub watcher_task_id: Option<String>,
-    /// Pre-loaded prompt templates keyed by template name.
-    pub prompts: HashMap<String, String>,
+    /// Prompt template loader providing three-level resolution (in-memory,
+    /// file-based, embedded default) via [`PromptLoader::render`].
+    pub prompt_loader: PromptLoader,
 }
 
 impl PluginContext {
@@ -113,7 +116,7 @@ impl PluginContext {
     /// A new `PluginContext` with:
     /// - `diagnostics = Diagnostics::new()`
     /// - `watcher_task_id = None`
-    /// - `prompts = HashMap::new()`
+    /// - `prompt_loader = PromptLoader::new(config.prompts.clone())`
     ///
     /// # Examples
     ///
@@ -133,6 +136,7 @@ impl PluginContext {
         tool_registry: ToolRegistry,
         governance: GovernanceChecker,
     ) -> Self {
+        let prompts_cfg = config.prompts.clone();
         Self {
             config,
             workspace,
@@ -143,7 +147,7 @@ impl PluginContext {
             governance,
             diagnostics: Diagnostics::new(),
             watcher_task_id: None,
-            prompts: HashMap::new(),
+            prompt_loader: PromptLoader::new(prompts_cfg),
         }
     }
 
@@ -171,27 +175,35 @@ impl PluginContext {
         self
     }
 
-    /// Sets the prompt templates on this context and returns `self`.
+    /// Sets in-memory prompt overrides on this context and returns `self`.
+    ///
+    /// Override keys must use the `"{plugin}/{key}"` format, e.g.
+    /// `"security_review/system"`. Values are raw Tera template strings.
+    /// In-memory overrides take the highest priority in the resolution chain
+    /// (above file-based overrides and embedded defaults).
+    ///
+    /// This method is primarily intended for testing, where injecting a known
+    /// template string is preferable to writing temporary files.
     ///
     /// # Arguments
     ///
-    /// * `prompts` - Map of template name to template content string.
+    /// * `overrides` - Map of `"{plugin}/{key}"` to raw Tera template content.
     ///
     /// # Returns
     ///
-    /// `self` with `prompts` populated.
+    /// `self` with the in-memory overrides installed on `prompt_loader`.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use std::collections::HashMap;
     /// # use xzardgz::plugins::context::PluginContext;
-    /// // let mut prompts = HashMap::new();
-    /// // prompts.insert("review_prompt".to_string(), "...".to_string());
-    /// // let ctx = PluginContext::new(...).with_prompts(prompts);
+    /// // let mut overrides = HashMap::new();
+    /// // overrides.insert("security_review/system".to_string(), "Custom.".to_string());
+    /// // let ctx = PluginContext::new(...).with_prompts(overrides);
     /// ```
-    pub fn with_prompts(mut self, prompts: HashMap<String, String>) -> Self {
-        self.prompts = prompts;
+    pub fn with_prompts(mut self, overrides: HashMap<String, String>) -> Self {
+        self.prompt_loader = self.prompt_loader.with_in_memory_overrides(overrides);
         self
     }
 
@@ -404,7 +416,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let ctx = make_context_with_root(tmp.path().to_str().unwrap());
         assert!(ctx.diagnostics.is_empty());
-        assert!(ctx.prompts.is_empty());
+        assert!(!ctx.prompt_loader.has_in_memory_overrides());
         assert!(ctx.watcher_task_id.is_none());
     }
 
@@ -439,16 +451,23 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn test_plugin_context_with_prompts_sets_prompts() {
+    fn test_plugin_context_with_prompts_sets_in_memory_overrides() {
         // SAFETY: TempDir::new() only fails if the OS cannot create a temp dir.
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut prompts = HashMap::new();
-        prompts.insert("review_prompt".to_string(), "Review the code.".to_string());
-        let ctx = make_context_with_root(tmp.path().to_str().unwrap()).with_prompts(prompts);
-        assert_eq!(
-            ctx.prompts.get("review_prompt").map(String::as_str),
-            Some("Review the code.")
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "security_review/system".to_string(),
+            "Overridden system prompt.".to_string(),
         );
+        let ctx = make_context_with_root(tmp.path().to_str().unwrap()).with_prompts(overrides);
+        assert!(
+            ctx.prompt_loader.has_in_memory_overrides(),
+            "with_prompts must install in-memory overrides on prompt_loader"
+        );
+        let result = ctx
+            .prompt_loader
+            .render("security_review", "system", &tera::Context::new());
+        assert_eq!(result, "Overridden system prompt.");
     }
 
     // ------------------------------------------------------------------

@@ -58,29 +58,6 @@ use crate::providers::base::Provider;
 use crate::tools::registry::ToolRegistry;
 
 // ---------------------------------------------------------------------------
-// Default prompts
-// ---------------------------------------------------------------------------
-
-/// Default system prompt for the technical review plugin.
-const DEFAULT_SYSTEM_PROMPT: &str = "\
-You are a senior software architect performing a technical review of a codebase. \
-Analyze the provided repository information and return your findings as a JSON object. \
-The JSON object must have exactly one top-level key: \"findings\", whose value is an array. \
-Each element of the findings array must be a JSON object with these fields: \
-\"category\" (string - the review dimension), \
-\"severity\" (string - one of: info, low, medium, high, critical), \
-\"file\" (string or null - repository-relative file path), \
-\"line\" (number or null - 1-based line number), \
-\"symbol\" (string or null - function, struct, or module name), \
-\"evidence\" (string - what you observed), \
-\"impact\" (string - why it matters), \
-\"recommendation\" (string - concrete steps to address this), \
-\"confidence\" (number - your confidence in [0.0, 1.0]), \
-\"related_files\" (array of strings - other affected files), \
-\"references\" (array of strings - external documentation links). \
-Return ONLY the JSON object. Do not include any other text, markdown, or explanation.";
-
-// ---------------------------------------------------------------------------
 // TechnicalReviewPlugin
 // ---------------------------------------------------------------------------
 
@@ -172,12 +149,13 @@ impl WorkflowPlugin for TechnicalReviewPlugin {
         // Step 4: Determine active review dimensions.
         let dimensions = ReviewDimension::from_focus_areas(&config.focus_areas);
 
-        // Step 5: Build prompts.
-        let system_prompt = ctx
-            .prompts
-            .get("technical_review_system")
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+        // Step 5: Resolve the system prompt via PromptLoader.
+        //
+        // Resolution order: in-memory override > file-based override >
+        // embedded default. All override failures fall back transparently.
+        let system_prompt =
+            ctx.prompt_loader
+                .render("technical_review", "system", &tera::Context::new());
 
         // Step 6: Compute the turn budget and select the investigation strategy.
         //

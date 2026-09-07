@@ -17,6 +17,7 @@ pub mod watcher;
 pub mod workspace;
 
 pub mod plugins;
+pub mod prompts;
 
 pub mod mcp;
 pub mod reports;

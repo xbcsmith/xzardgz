@@ -1,0 +1,3 @@
+# Prompt key to template filename mapping for the security-review plugin.
+templates:
+  system: system.tera

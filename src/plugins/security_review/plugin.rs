@@ -64,33 +64,6 @@ use crate::providers::base::Provider;
 use crate::tools::registry::ToolRegistry;
 
 // ---------------------------------------------------------------------------
-// Default system prompt
-// ---------------------------------------------------------------------------
-
-/// Default system prompt for the security review plugin.
-const DEFAULT_SYSTEM_PROMPT: &str = "\
-You are a senior security engineer performing a security review of a codebase. \
-Analyze the provided repository information and return your findings as a JSON object. \
-The JSON object must have exactly one top-level key: \"findings\", whose value is an array. \
-Each element of the findings array must be a JSON object with these fields: \
-\"category\" (string - security category, e.g. secrets, injection, auth, unsafe_rust), \
-\"severity\" (string - one of: info, low, medium, high, critical), \
-\"file\" (string or null - repository-relative file path), \
-\"line\" (number or null - 1-based line number), \
-\"symbol\" (string or null - function, struct, or module name), \
-\"evidence\" (string - what you observed, DO NOT include raw secret values), \
-\"exploitability\" (string - how easily this could be exploited), \
-\"impact\" (string - why it matters for security), \
-\"remediation\" (string - concrete steps to fix this), \
-\"confidence\" (number - your confidence in [0.0, 1.0]), \
-\"cwe\" (string or null - CWE identifier e.g. CWE-89), \
-\"owasp\" (string or null - OWASP category e.g. A03:2021), \
-\"false_positive_notes\" (string or null - guidance for false positive analysis), \
-\"sarif_help_uri\" (string or null - URL for further documentation). \
-IMPORTANT: Never include raw secret values, API keys, passwords, or tokens in evidence fields. \
-Return ONLY the JSON object. Do not include any other text, markdown, or explanation.";
-
-// ---------------------------------------------------------------------------
 // SecurityReviewPlugin
 // ---------------------------------------------------------------------------
 
@@ -193,12 +166,13 @@ impl WorkflowPlugin for SecurityReviewPlugin {
             config.check_cryptography,
         );
 
-        // Step 5: Build prompts.
-        let system_prompt = ctx
-            .prompts
-            .get("security_review_system")
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+        // Step 5: Resolve the system prompt via PromptLoader.
+        //
+        // Resolution order: in-memory override > file-based override >
+        // embedded default. All override failures fall back transparently.
+        let system_prompt =
+            ctx.prompt_loader
+                .render("security_review", "system", &tera::Context::new());
 
         // Step 6: Compute the turn budget and select the investigation strategy.
         //
