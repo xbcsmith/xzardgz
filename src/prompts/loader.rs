@@ -295,7 +295,38 @@ impl PromptLoader {
         &[]
     }
 
-    /// Looks up the statically embedded template content for `(plugin, key)`.
+    /// Returns the raw embedded template content for `(plugin, key)` without
+    /// rendering.
+    ///
+    /// This is the source text that `prompts export` writes to disk, and the
+    /// same content that [`render`][Self::render] uses as the lowest-priority
+    /// fallback. Returns `None` when no embedded template is registered for
+    /// the `(plugin, key)` pair.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin` - Plugin identifier, e.g. `"security_review"`.
+    /// * `key`    - Template key, e.g. `"system"`.
+    ///
+    /// # Returns
+    ///
+    /// `Some(&str)` with the raw Tera template source, or `None` if not found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::prompts::PromptLoader;
+    ///
+    /// let raw = PromptLoader::embedded_raw("security_review", "system");
+    /// assert!(raw.is_some());
+    /// assert!(!raw.unwrap().is_empty());
+    ///
+    /// let missing = PromptLoader::embedded_raw("unknown", "system");
+    /// assert!(missing.is_none());
+    /// ```
+    pub fn embedded_raw(plugin: &str, key: &str) -> Option<&'static str> {
+        Self::embedded_template(plugin, key)
+    }
     ///
     /// Returns `None` when no embedded template is registered for the pair.
     fn embedded_template(plugin: &str, key: &str) -> Option<&'static str> {
@@ -510,5 +541,46 @@ mod tests {
         );
         let loader = PromptLoader::default().with_in_memory_overrides(overrides);
         assert!(loader.has_in_memory_overrides());
+    }
+
+    #[test]
+    fn test_embedded_raw_security_review_system_returns_some() {
+        let raw = PromptLoader::embedded_raw("security_review", "system");
+        assert!(
+            raw.is_some(),
+            "embedded_raw must return Some for security_review/system"
+        );
+        assert!(!raw.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_embedded_raw_technical_review_system_returns_some() {
+        let raw = PromptLoader::embedded_raw("technical_review", "system");
+        assert!(
+            raw.is_some(),
+            "embedded_raw must return Some for technical_review/system"
+        );
+        assert!(!raw.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_embedded_raw_unknown_plugin_returns_none() {
+        let raw = PromptLoader::embedded_raw("nonexistent_plugin", "system");
+        assert!(raw.is_none());
+    }
+
+    #[test]
+    fn test_embedded_raw_unknown_key_returns_none() {
+        let raw = PromptLoader::embedded_raw("security_review", "nonexistent_key");
+        assert!(raw.is_none());
+    }
+
+    #[test]
+    fn test_embedded_raw_content_matches_rendered_default() {
+        // When no Tera variables are used, raw content and rendered output match.
+        let raw = PromptLoader::embedded_raw("security_review", "system").unwrap();
+        let rendered =
+            PromptLoader::default().render("security_review", "system", &tera::Context::new());
+        assert_eq!(raw, rendered.as_str());
     }
 }

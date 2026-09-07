@@ -423,10 +423,13 @@ pub enum PromptsCommands {
 
     /// Render a prompt template with a test context for debugging.
     Render {
-        /// Name of the template to render.
-        template: String,
+        /// Plugin identifier, e.g. `security_review` or `security-review`.
+        plugin: String,
 
-        /// JSON context string to apply during rendering.
+        /// Template key within the plugin, e.g. `system`.
+        key: String,
+
+        /// JSON object string supplying Tera context variables.
         /// Note: the short flag -c is reserved by the global --config option.
         #[arg(long)]
         context: Option<String>,
@@ -1037,15 +1040,21 @@ mod tests {
             "xzardgz",
             "prompts",
             "render",
-            "my-template",
+            "security_review",
+            "system",
             "--context",
             r#"{"key":"value"}"#,
         ])
         .unwrap();
         match cli.command {
             Commands::Prompts { command } => match command {
-                PromptsCommands::Render { template, context } => {
-                    assert_eq!(template, "my-template");
+                PromptsCommands::Render {
+                    plugin,
+                    key,
+                    context,
+                } => {
+                    assert_eq!(plugin, "security_review");
+                    assert_eq!(key, "system");
                     assert_eq!(context, Some(r#"{"key":"value"}"#.to_string()));
                 }
                 _ => panic!("expected Render subcommand"),
