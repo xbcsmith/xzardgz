@@ -851,6 +851,12 @@ pub struct SecurityReviewConfig {
     /// When `None`, the default of `4` is used.
     #[serde(default)]
     pub investigation_batch_count: Option<u32>,
+    /// Whether to query the OSV vulnerability database when dependency scanning
+    /// is enabled. The OSV endpoint is unauthenticated and requires no API key.
+    ///
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub osv_enabled: bool,
 }
 
 /// Default maximum agent turns for security review.
@@ -886,6 +892,7 @@ impl Default for SecurityReviewConfig {
             investigation_threshold_files: None,
             investigation_threshold_bytes: None,
             investigation_batch_count: None,
+            osv_enabled: default_true(),
         }
     }
 }
@@ -1558,6 +1565,21 @@ mod tests {
     fn test_security_review_config_investigation_batch_count_defaults_to_none() {
         let cfg = SecurityReviewConfig::default();
         assert!(cfg.investigation_batch_count.is_none());
+    }
+
+    #[test]
+    fn test_security_review_config_osv_enabled_defaults_to_true() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(cfg.osv_enabled);
+    }
+
+    #[test]
+    fn test_security_review_config_osv_enabled_can_be_set_false() {
+        let cfg = SecurityReviewConfig {
+            osv_enabled: false,
+            ..SecurityReviewConfig::default()
+        };
+        assert!(!cfg.osv_enabled);
     }
 
     #[test]

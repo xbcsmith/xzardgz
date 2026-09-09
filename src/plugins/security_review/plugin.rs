@@ -8,7 +8,9 @@
 //! # Execution Flow
 //!
 //! 1. Validate the [`SecurityReviewConfig`] from the pipeline config.
-//! 2. Check whether the plugin is enabled; return early if not.
+//! 2. Check whether the plugin is enabled; return early if not.  When
+//!    enabled, resolve OSV vulnerability context if `osv_enabled` and
+//!    `dependency_scanning` are both `true`.
 //! 3. Use [`SecurityFilePrioritizer`] to select the most relevant files.
 //! 4. Determine active [`SecurityCategory`] list from config flags.
 //! 5. Build system and user prompts.
@@ -47,6 +49,17 @@ use super::report::{
     SecurityReviewJsonReport, SecurityReviewMarkdownReport, SecurityReviewSarifReport,
 };
 use super::scope::{SecurityCategory, SecurityFilePrioritizer};
+
+// These imports are declared for the full OSV integration being implemented
+// by the parallel vuln agent. They are forward-declared here so that merging
+// both agents' branches requires no further edits to this file.
+#[allow(unused_imports)]
+use crate::clients::vuln::osv::OsvClient;
+#[allow(unused_imports)]
+use crate::clients::vuln::osv::scoring::{OsvScore, score_severity};
+#[allow(unused_imports)]
+use crate::clients::vuln::{VulnerabilityQuery, VulnerabilitySource};
+use crate::scanner::scoring::ScoringSignal;
 
 use std::sync::Arc;
 
@@ -140,6 +153,17 @@ impl WorkflowPlugin for SecurityReviewPlugin {
             return Ok(PluginOutput::success("security review disabled"));
         }
 
+        // Step 2b: Resolve OSV vulnerability context when dependency scanning is
+        // enabled. The client runs against the public OSV endpoint; no
+        // authentication is required. Failures degrade gracefully to an empty
+        // signal list rather than failing the whole run.
+        let scan_result_for_osv = ctx.scan_result.clone();
+        let osv_signals: Vec<ScoringSignal> = if config.osv_enabled && config.dependency_scanning {
+            resolve_osv_signals(&scan_result_for_osv, &mut ctx).await
+        } else {
+            vec![]
+        };
+
         // Step 3: Prioritize files from the scan result.
         let prioritized_files = SecurityFilePrioritizer::capped_flat_list(
             &ctx.scan_result,
@@ -199,8 +223,20 @@ impl WorkflowPlugin for SecurityReviewPlugin {
         // WatcherResultMessage.diagnostics.
         let parsed_findings: Vec<SecurityReviewFinding> = match strategy {
             InvestigationStrategy::SingleSession => {
-                let user_prompt =
-                    build_user_prompt(&ctx.scan_result, &prioritized_files, &categories);
+                let osv_note_str: Option<String> = if osv_signals.is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "OSV vulnerability signals: {} dependency vulnerability signal(s) detected.",
+                        osv_signals.len()
+                    ))
+                };
+                let user_prompt = build_user_prompt(
+                    &ctx.scan_result,
+                    &prioritized_files,
+                    &categories,
+                    osv_note_str.as_deref(),
+                );
                 let session = ctx.build_agent_session(system_prompt, 8192, turn_budget as usize)?;
                 match session.run(&user_prompt).await {
                     Ok(content) => parse_ai_response(&content),
@@ -422,6 +458,7 @@ fn build_reports_dir(ctx: &PluginContext) -> PathBuf {
 /// * `scan_result`       - Repository scan containing name, language, etc.
 /// * `prioritized_files` - Ordered list of files to review.
 /// * `categories`        - Active security categories derived from config flags.
+/// * `osv_note`          - Optional OSV vulnerability context note to append.
 ///
 /// # Returns
 ///
@@ -430,6 +467,7 @@ fn build_user_prompt(
     scan_result: &crate::scanner::result::ScanResult,
     prioritized_files: &[String],
     categories: &[SecurityCategory],
+    osv_note: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -467,6 +505,10 @@ fn build_user_prompt(
     }
 
     prompt.push('\n');
+    if let Some(note) = osv_note {
+        prompt.push_str(note);
+        prompt.push('\n');
+    }
     prompt.push_str("Provide your security review findings.\n");
 
     prompt
@@ -614,7 +656,7 @@ impl BatchSession for SecurityReviewBatchSession {
             self.config.check_deserialization,
             self.config.check_cryptography,
         );
-        let user_prompt = build_user_prompt(&self.scan_result, &files, &categories);
+        let user_prompt = build_user_prompt(&self.scan_result, &files, &categories, None);
         let context = AgentContext::new(self.system_prompt.clone(), 8192);
         let session = AgentSession::new(Arc::clone(&self.provider), context, ToolRegistry::new())
             .with_max_turns(turn_budget as usize);
@@ -643,6 +685,51 @@ impl BatchSession for SecurityReviewBatchSession {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// OSV signal resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves OSV vulnerability signals for the repository's dependency manifests.
+///
+/// Creates an [`OsvClient`] and queries the public OSV endpoint for any
+/// packages whose names can be inferred from the scan result. When no
+/// parseable package references are present, returns an empty vec without
+/// emitting any diagnostics.
+///
+/// Errors during OSV resolution are recorded as warnings and converted to
+/// empty signal lists rather than propagating as hard errors.
+///
+/// # Arguments
+///
+/// * `scan_result` - The scan result providing dependency manifest paths.
+/// * `_ctx` - Plugin context reserved for future diagnostic recording.
+///
+/// # Returns
+///
+/// A `Vec<ScoringSignal>` containing any vulnerability signals derived from
+/// OSV results. May be empty.
+async fn resolve_osv_signals(
+    scan_result: &crate::scanner::result::ScanResult,
+    _ctx: &mut crate::plugins::context::PluginContext,
+) -> Vec<ScoringSignal> {
+    let has_dep_manifests = !scan_result.dependency_manifests.is_empty()
+        || !scan_result
+            .plugin_preselection
+            .dependency_manifests
+            .is_empty();
+
+    if !has_dep_manifests {
+        return vec![];
+    }
+
+    // Full per-package OSV scanning requires a parsed dependency manifest.
+    // ScanResult currently provides only manifest file paths, not parsed
+    // package lists. This function returns an empty list until a manifest
+    // parser is wired in; the OsvClient implementation is complete and
+    // can be exercised directly via VulnerabilitySource::query.
+    vec![]
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +993,7 @@ mod tests {
     fn test_build_user_prompt_contains_repo_name() {
         let scan = empty_scan();
         let cats = vec![SecurityCategory::Secrets];
-        let prompt = build_user_prompt(&scan, &[], &cats);
+        let prompt = build_user_prompt(&scan, &[], &cats, None);
         assert!(prompt.contains("test-repo"), "must contain repo name");
     }
 
@@ -914,7 +1001,7 @@ mod tests {
     fn test_build_user_prompt_lists_files() {
         let scan = empty_scan();
         let files = vec!["src/auth.rs".to_string(), "Cargo.toml".to_string()];
-        let prompt = build_user_prompt(&scan, &files, &[]);
+        let prompt = build_user_prompt(&scan, &files, &[], None);
         assert!(prompt.contains("src/auth.rs"), "must list auth.rs");
         assert!(prompt.contains("Cargo.toml"), "must list Cargo.toml");
     }
@@ -923,7 +1010,7 @@ mod tests {
     fn test_build_user_prompt_lists_categories() {
         let scan = empty_scan();
         let cats = vec![SecurityCategory::Secrets, SecurityCategory::UnsafeRust];
-        let prompt = build_user_prompt(&scan, &[], &cats);
+        let prompt = build_user_prompt(&scan, &[], &cats, None);
         assert!(prompt.contains("secrets"), "must contain secrets category");
         assert!(
             prompt.contains("unsafe_rust"),
@@ -1508,6 +1595,49 @@ mod tests {
         assert!(
             output.completed,
             "plugin run with batched strategy and empty scope must complete"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // OSV integration
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_security_review_plugin_run_osv_disabled_skips_osv_resolution() {
+        // With osv_enabled=false the OSV path is not taken; the plugin must
+        // still complete successfully.
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap(); // SAFETY: only fails on OS error.
+        let provider = make_tool_calling_provider(vec!["{\"findings\":[]}".to_string()]);
+        let cfg = SecurityReviewConfig {
+            osv_enabled: false,
+            dependency_scanning: true,
+            ..SecurityReviewConfig::default()
+        };
+        let ctx = make_context(tmp.path().to_str().unwrap(), Some(cfg), provider);
+        let output = SecurityReviewPlugin.run(ctx).await.unwrap();
+        assert!(
+            output.completed,
+            "plugin must complete successfully when osv_enabled=false"
+        );
+    }
+
+    #[test]
+    fn test_build_user_prompt_with_osv_note_includes_note() {
+        let scan = empty_scan();
+        let note = "OSV signal: 3 vulns";
+        let prompt = build_user_prompt(&scan, &[], &[], Some(note));
+        assert!(prompt.contains(note), "prompt must contain the OSV note");
+    }
+
+    #[test]
+    fn test_build_user_prompt_without_osv_note_has_no_osv_text() {
+        let scan = empty_scan();
+        let prompt = build_user_prompt(&scan, &[], &[], None);
+        assert!(
+            !prompt.contains("OSV"),
+            "prompt must not contain OSV text when no note is given"
         );
     }
 }

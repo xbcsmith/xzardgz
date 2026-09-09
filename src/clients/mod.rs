@@ -17,6 +17,7 @@
 
 pub mod repodata;
 pub mod scorecard;
+pub mod vuln;
 
 pub use repodata::{RepoDataResolveError, RepoMetadata};
 pub use scorecard::{ScorecardCheck, ScorecardResolveError, ScorecardResult};
