@@ -2,6 +2,7 @@
 name = "xzardgz"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88.0"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -31,6 +32,13 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 walkdir = "2.5.0"
 sha2 = "0.10"
 ulid = "1.1"
+ast-grep-core = "0.45"
+ast-grep-language = { version = "0.45", default-features = false, features = ["tree-sitter-rust"] }
+aho-corasick = "1"
+blake2 = "0.10"
+rayon = "1"
+globset = "0.4"
+dirs = "5"
 
 [dev-dependencies]
 mockall = "0.13.1"
@@ -38,3 +46,7 @@ temp-env = "0.3.6"
 tempfile = "3.23.0"
 test-case = "3.3.1"
 wiremock = "0.6"
+jsonschema = "0.29"
+
+[features]
+sast-integration-tests = []
