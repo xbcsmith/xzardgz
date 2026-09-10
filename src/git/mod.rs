@@ -6,3 +6,4 @@
 pub mod governance;
 pub mod metadata;
 pub mod ops;
+pub mod write;
