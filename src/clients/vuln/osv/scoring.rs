@@ -3,6 +3,12 @@
 //! Converts raw CVSS vector strings found in [`OsvSeverityEntry`] records
 //! into numeric scores and categorical [`CvssBand`] values.
 //!
+//! Severity-band mapping from a numeric score is delegated to the
+//! [`cvss_rs`] crate via `cvss_rs::score_to_severity`, which follows the
+//! NVD / FIRST CVSS v3 and v4 band boundaries.  Custom vector-string scoring
+//! (`score_cvss3`, `score_cvss4`) remains implemented locally because
+//! `cvss-rs` is a JSON deserializer rather than a vector-string scorer.
+//!
 //! # Primary-score rule
 //!
 //! When a record contains both CVSS v3 and CVSS v4 entries, the v3 score is
@@ -102,16 +108,12 @@ impl CvssBand {
     /// assert_eq!(CvssBand::from_score(-1.0), None);
     /// ```
     pub fn from_score(score: f64) -> Option<CvssBand> {
-        if score <= 0.0 {
-            None
-        } else if score <= 3.9 {
-            Some(CvssBand::Low)
-        } else if score <= 6.9 {
-            Some(CvssBand::Medium)
-        } else if score <= 8.9 {
-            Some(CvssBand::High)
-        } else {
-            Some(CvssBand::Critical)
+        match cvss_rs::score_to_severity(score) {
+            None | Some(cvss_rs::Severity::None) => None,
+            Some(cvss_rs::Severity::Low) => Some(CvssBand::Low),
+            Some(cvss_rs::Severity::Medium) => Some(CvssBand::Medium),
+            Some(cvss_rs::Severity::High) => Some(CvssBand::High),
+            Some(cvss_rs::Severity::Critical) => Some(CvssBand::Critical),
         }
     }
 }
