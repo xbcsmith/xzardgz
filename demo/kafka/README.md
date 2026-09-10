@@ -16,7 +16,7 @@ The file contains four configuration sections:
 
 ## How to Use
 
-1. Open `examples/kafka/kafka_config.yaml` and identify the sections you need.
+1. Open `demo/kafka/kafka_config.yaml` and identify the sections you need.
 2. Copy them into your `config.yaml`, merging with any existing content.
 3. Adjust the values for your environment (see below).
 4. Validate the configuration with a dry run:

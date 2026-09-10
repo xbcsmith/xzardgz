@@ -1,10 +1,26 @@
 # Demo
 
-This directory contains runnable example files for XZardgz. Each subdirectory
-covers a different configuration or workflow surface. Copy the files you need
-into your own project and adjust them to match your environment.
+Self-contained, runnable demonstrations for XZardgz. Each subdirectory contains
+a `README.md` with step-by-step instructions and expected output that a new
+contributor can follow from top to bottom with no other context.
+
+Demos that include a `fixture-repo/` subdirectory can be run entirely offline
+against the bundled repository without cloning any external project.
 
 ## Subdirectories
+
+### `mcp/`
+
+End-to-end walkthrough for MCP (Model Context Protocol) server configuration.
+Validates and introspects a filesystem MCP server against the bundled
+`fixture-repo/` Python project.
+
+- `config.yaml` - Demo-specific xzardgz configuration.
+- `mcp_server_config.yaml` - Annotated server definitions to copy into your own
+  `config.yaml`.
+- `fixture-repo/` - Minimal Python project used as the analysis target.
+
+See [mcp/README.md](mcp/README.md) for the step-by-step walkthrough.
 
 ### `plans/`
 
@@ -40,15 +56,6 @@ development setup and a production SASL/SSL setup.
 
 See [kafka/README.md](kafka/README.md) for details.
 
-### `mcp/`
-
-MCP (Model Context Protocol) server configuration snippets. Copy server
-definitions into the `mcp.servers` section of `config.yaml`.
-
-- `mcp_server_config.yaml` - Filesystem and git MCP server definitions.
-
-See [mcp/README.md](mcp/README.md) for details.
-
 ### `prompts/`
 
 Example prompt template overrides. Copy the directory structure into your
@@ -61,14 +68,21 @@ project and reference it with `prompts.directories` in `config.yaml`.
 
 See [prompts/README.md](prompts/README.md) for details.
 
-## Prerequisites
+## General Prerequisites
 
-All examples assume:
+All demos assume:
 
-- `xzardgz` is installed and on your `PATH`.
-- `OPENAI_API_KEY` is set in your environment (or the provider is configured
+- `xzardgz` is installed and on your `PATH` (`cargo install --path .`).
+- You are running commands from the **repository root** unless a demo's README
+  specifies otherwise.
+
+Demos that call AI providers additionally require:
+
+- `OPENAI_API_KEY` set in your environment (or the provider configured
   differently in `config.yaml`).
-- You are running commands from the root of the repository you want to analyse.
+
+The `mcp/` demo also requires Node.js 18 or later for the `list-tools` step; the
+`validate` and `list-servers` steps work without it.
 
 ## Further Reading
 

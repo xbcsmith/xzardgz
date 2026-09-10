@@ -1,124 +1,131 @@
-# MCP Server Configuration Example
+# MCP Demo: Validate and Introspect an MCP Server
 
-`mcp_server_config.yaml` contains annotated MCP (Model Context Protocol) server
-definitions. Copy the server entries you need into the `mcp.servers` section of
-your `config.yaml`.
+This demo walks through validating an MCP server configuration, listing
+configured servers, and discovering tools exposed by the bundled filesystem
+server. All commands are run against the `fixture-repo/` directory in this
+folder, so no external repository or live service is required.
 
-## What Is MCP
+## What This Demo Shows
 
-MCP is an open protocol that allows AI agents to call tools hosted by external
-processes. XZardgz uses MCP servers to give plugins access to capabilities such
-as reading files, querying git history, or running web searches, without
-building those capabilities directly into the binary.
+- How to validate an MCP configuration with `xzardgz mcp validate`.
+- How to list configured servers with `xzardgz mcp list-servers`.
+- How to discover tools a server exposes with `xzardgz mcp list-tools` (requires
+  Node.js).
 
-All MCP tool calls are opt-in. A tool must appear in the `allowed_tools` list
-for the server before any plugin can call it.
+## Prerequisites
 
-## What Is Included
+- `xzardgz` installed and on your `PATH`:
 
-The file defines two example servers:
+  ```bash
+  cargo install --path .
+  ```
 
-| Server       | Command                                       | Purpose                                                |
-| ------------ | --------------------------------------------- | ------------------------------------------------------ |
-| `filesystem` | `npx @modelcontextprotocol/server-filesystem` | Read files and list directories inside a project tree. |
-| `git`        | `npx @modelcontextprotocol/server-git`        | Query git log, diff, and status for a repository.      |
+- For the `list-tools` step only: Node.js 18 or later with `npx` available. The
+  `validate` and `list-servers` steps do not require Node.js.
 
-## How to Use
+Run all commands from the **repository root**, not from inside `demo/mcp/`.
 
-1. Ensure Node.js and `npx` are available on your system.
-2. Copy the server definition you want into your `config.yaml` under
-   `mcp.servers`.
-3. Add the tools you want plugins to use to `allowed_tools`.
-4. Adjust the `args` list to point at your project directory.
-5. Validate the server configuration:
+## Fixture Repository
 
-```bash
-xzardgz mcp validate --config config.yaml
+The `fixture-repo/` subdirectory is a minimal Python project that serves as the
+analysis target:
+
+```text
+fixture-repo/
+  README.md          Project description
+  main.py            Entry point: prints a greeting
+  utils.py           Utility module: greet() function
+  requirements.txt   Dependency list (empty for this demo)
 ```
 
-1. List the tools the server exposes:
+The MCP filesystem server exposes this directory to XZardgz plugins so that they
+can read and analyse its files during a workflow run.
 
-```bash
-xzardgz mcp tools filesystem --config config.yaml
-```
+## Step 1: Review the Demo Configuration
 
-## Minimal Configuration
-
-Copy this block into `config.yaml` to enable the filesystem server for the
-current directory:
+Open `demo/mcp/config.yaml`. It registers one MCP server named `filesystem` that
+uses the `@modelcontextprotocol/server-filesystem` Node.js package to expose
+`demo/mcp/fixture-repo/`:
 
 ```yaml
 mcp:
-  timeout_seconds: 30
   servers:
     - name: "filesystem"
       command: "npx"
       args:
         - "-y"
         - "@modelcontextprotocol/server-filesystem"
-        - "."
-      env: {}
-      timeout_seconds: 30
-      transport: "stdio"
+        - "demo/mcp/fixture-repo"
       allowed_tools:
         - "read_file"
         - "list_directory"
-      auth: null
+        - "get_file_info"
 ```
 
-Replace `"."` with the absolute path to the directory you want to expose to
-plugins.
+The `allowed_tools` list controls which tools plugins are permitted to call.
+Tools not in this list cannot be invoked even if the server exposes them.
 
-## Allowing Tools
+## Step 2: Validate the Configuration
 
-Tools are gated by an explicit allow list. A tool that is not listed in
-`allowed_tools` cannot be called even if the server exposes it.
-
-To discover what tools a server offers before deciding what to allow:
+Check that the configuration is structurally valid without connecting to any
+server:
 
 ```bash
-xzardgz mcp tools filesystem --config config.yaml
+xzardgz mcp validate --config demo/mcp/config.yaml
 ```
 
-To test a specific tool call:
+Expected output:
+
+```text
+MCP configuration is valid.
+Configured servers (1):
+  - filesystem
+```
+
+## Step 3: List Configured Servers
+
+Print a summary of every registered server including transport and timeout:
 
 ```bash
-xzardgz mcp test-tool filesystem read_file --config config.yaml
+xzardgz mcp list-servers --config demo/mcp/config.yaml
 ```
 
-## Transport Types
+Expected output:
 
-Both servers in this example use `"stdio"` transport: XZardgz spawns the server
-process and communicates over its standard input and output. This is the most
-common MCP transport and requires no network configuration.
+```text
+Configured MCP servers (1):
+  - filesystem (transport: stdio, timeout: 30s)
+```
 
-An alternative transport type `"sse"` (Server-Sent Events) is available for
-servers that run as persistent HTTP services.
+## Step 4: List Tools (requires Node.js)
 
-## Security Considerations
-
-- Set `allowed_tools` to the minimum set of tools your plugins actually need.
-- Use absolute paths in `args` to avoid ambiguity about which directory is
-  accessible.
-- Do not expose directories outside the repository being analysed.
-- Prefer `"stdio"` transport for local servers; use `"sse"` only for remote
-  servers with appropriate network controls.
-- MCP server processes inherit the environment of the watcher or `run` process.
-  Avoid placing secrets in the `env` map; inject them as environment variables
-  in the outer process instead.
-
-## Installing the Example Servers
-
-Both servers are distributed as npm packages and can be run without a permanent
-install using `npx -y`. To install them permanently:
+Spawn the filesystem MCP server as a subprocess and query its tool manifest.
+Node.js 18 or later must be installed and `npx` must be on your `PATH`.
 
 ```bash
-npm install -g @modelcontextprotocol/server-filesystem
-npm install -g @modelcontextprotocol/server-git
+xzardgz mcp list-tools filesystem --config demo/mcp/config.yaml
 ```
 
-Then change `command` to the installed binary path and remove the `npx -y`
-prefix from `args`.
+Expected output (tool descriptions may vary by package version):
+
+```text
+Tools on server 'filesystem' (3):
+  - read_file - Read the complete contents of a file from the file system.
+  - list_directory - Get a listing of all files and directories in a path.
+  - get_file_info - Retrieve metadata about a file or directory.
+```
+
+If Node.js is not installed, skip this step. Steps 2 and 3 are fully offline.
+
+## What to Try Next
+
+- Open `demo/mcp/fixture-repo/utils.py` and read it through
+  `xzardgz mcp test-invoke` to see a live tool call result.
+- Add the `git` server from `demo/mcp/mcp_server_config.yaml` to
+  `demo/mcp/config.yaml` and run `xzardgz mcp list-servers` again to see both
+  servers listed.
+- Run `xzardgz run --plan demo/plans/analyze_repo.yaml` with an MCP-aware
+  configuration to see plugins calling MCP tools during a full workflow run.
 
 ## Further Reading
 

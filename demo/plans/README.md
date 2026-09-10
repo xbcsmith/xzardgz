@@ -16,7 +16,7 @@ this to inspect what the scanner discovers before committing to a full review,
 or to pre-cache a scan artifact for later use.
 
 ```bash
-xzardgz run --plan examples/plans/scan_only.yaml --config config.yaml
+xzardgz run --plan demo/plans/scan_only.yaml --config config.yaml
 ```
 
 Output: `.xzardgz/scan/scan.json`
@@ -28,7 +28,7 @@ artifact. Focuses on architecture, reliability, and maintainability. Returns up
 to 25 findings at medium severity or above.
 
 ```bash
-xzardgz run --plan examples/plans/analyze_repo.yaml --config config.yaml
+xzardgz run --plan demo/plans/analyze_repo.yaml --config config.yaml
 ```
 
 Output: `.xzardgz/reports/` (Markdown and JSON)
@@ -40,7 +40,7 @@ reliability, maintainability, performance, and testability. Uses a lower
 severity threshold (`low`) to surface a broader set of observations.
 
 ```bash
-xzardgz run --plan examples/plans/technical_review_local.yaml --config config.yaml
+xzardgz run --plan demo/plans/technical_review_local.yaml --config config.yaml
 ```
 
 Output: `.xzardgz/reports/` (Markdown and JSON)
@@ -51,7 +51,7 @@ Scans the repository and runs the security review plugin. Produces Markdown,
 JSON, and SARIF output. Returns up to 25 findings at medium severity or above.
 
 ```bash
-xzardgz run --plan examples/plans/simple_security_review.yaml --config config.yaml
+xzardgz run --plan demo/plans/simple_security_review.yaml --config config.yaml
 ```
 
 Output: `.xzardgz/reports/` (Markdown, JSON, and SARIF)
@@ -66,7 +66,7 @@ Suitable for an initial security assessment or for uploading a comprehensive
 SARIF report to GitHub Code Scanning.
 
 ```bash
-xzardgz run --plan examples/plans/security_review_local.yaml --config config.yaml
+xzardgz run --plan demo/plans/security_review_local.yaml --config config.yaml
 ```
 
 Output: `.xzardgz/reports/` (Markdown, JSON, and SARIF)
@@ -112,7 +112,7 @@ xzardgz plugin run technical-review \
 Validate a plan without making any provider calls or writing reports:
 
 ```bash
-xzardgz run --plan examples/plans/analyze_repo.yaml --config config.yaml --dry-run
+xzardgz run --plan demo/plans/analyze_repo.yaml --config config.yaml --dry-run
 ```
 
 ## Further Reading

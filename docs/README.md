@@ -119,16 +119,19 @@ Technical specifications and command details.
 - [Governance](reference/governance.md)
 - [MCP Configuration](reference/mcp_configuration.md)
 
-## Examples
+## Demos
 
-Example plan files, watcher task messages, and configuration snippets are in the
-[`examples/`](../examples/) directory:
+Self-contained, runnable demonstrations are in the [`demo/`](../demo/)
+directory. Each subdirectory contains a `README.md` with step-by-step
+instructions and expected output.
 
-- [`examples/plans/`](../examples/plans/) - Workflow plan files
-- [`examples/watcher/`](../examples/watcher/) - Watcher task message examples
-- [`examples/kafka/`](../examples/kafka/) - Kafka configuration
-- [`examples/mcp/`](../examples/mcp/) - MCP server configuration
-- [`examples/prompts/`](../examples/prompts/) - Prompt override examples
+- [`demo/mcp/`](../demo/mcp/) - Validate and introspect MCP server configuration
+  against a bundled fixture repository.
+- [`demo/plans/`](../demo/plans/) - Workflow plan files for common scenarios.
+- [`demo/watcher/`](../demo/watcher/) - Example Kafka task messages for testing
+  watcher mode.
+- [`demo/kafka/`](../demo/kafka/) - Kafka configuration snippets.
+- [`demo/prompts/`](../demo/prompts/) - Prompt template override examples.
 
 ## Finding What You Need
 

@@ -26,7 +26,7 @@ CLI:
 kafka-console-producer \
   --bootstrap-server localhost:9092 \
   --topic xzardgz.tasks \
-  < examples/watcher/technical_review_task.json
+  < demo/watcher/technical_review_task.json
 ```
 
 With `kcat` (formerly `kafkacat`):
@@ -35,7 +35,7 @@ With `kcat` (formerly `kafkacat`):
 kcat -P \
   -b localhost:9092 \
   -t xzardgz.tasks \
-  examples/watcher/technical_review_task.json
+  demo/watcher/technical_review_task.json
 ```
 
 After publishing, the watcher process will log acceptance or rejection of the

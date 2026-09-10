@@ -9,7 +9,7 @@ language model instructions without modifying the binary.
 Templates are organised by plugin name:
 
 ```text
-examples/prompts/
+demo/prompts/
   technical_review/
     summary.md        # Override for the technical-review summary prompt
   security_review/
@@ -42,7 +42,7 @@ Reference this directory (or your own copy) in `config.yaml`:
 ```yaml
 prompts:
   directories:
-    - "examples/prompts"
+    - "demo/prompts"
 ```
 
 Multiple directories are supported; they are searched in the order listed.

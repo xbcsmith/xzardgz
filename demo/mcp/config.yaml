@@ -1,0 +1,26 @@
+# Demo configuration for the MCP walk-through.
+# Run all commands from the repository root:
+#   xzardgz mcp validate --config demo/mcp/config.yaml
+
+mcp:
+  timeout_seconds: 30
+  servers:
+    - name: "filesystem"
+      command: "npx"
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "demo/mcp/fixture-repo"
+      env: {}
+      timeout_seconds: 30
+      transport: "stdio"
+      allowed_tools:
+        - "read_file"
+        - "list_directory"
+        - "get_file_info"
+      auth: null
+  allowed_tools:
+    filesystem:
+      - "read_file"
+      - "list_directory"
+      - "get_file_info"

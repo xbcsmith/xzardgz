@@ -135,14 +135,14 @@ xzardgz watch --config config.yaml
 
 Publish a minimal task message to the Kafka task topic using your preferred
 Kafka client. A reference example is at
-`examples/watcher/technical_review_task.json`:
+`demo/watcher/technical_review_task.json`:
 
 ```json
 {
   "id": "01JTEST00000000000000TECH1",
   "spec_version": "1.0",
   "event_type": "xzardgz.technical_review.requested",
-  "source": "xzardgz/examples",
+  "source": "xzardgz/demo",
   "repository": "https://github.com/example/my-repo",
   "target_branch": "main",
   "plugin": "technical-review",
