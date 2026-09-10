@@ -1,10 +1,10 @@
 # Technical Review Report
 
-Generated at: 2026-09-10T14:43:32Z
+Generated at: 2026-09-10T15:11:55Z
 
-Repository: repo
+Repository: test-repo (https://github.com/org/test-repo)
 
-Workspace: 01M25WC8C0V92NHEHZ7MCZZ4TY
+Workspace: 01M25Y073WP5GJRDZN1WFVB6MQ
 
 ## Summary
 

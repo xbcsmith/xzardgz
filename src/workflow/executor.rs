@@ -1163,6 +1163,10 @@ impl WorkflowExecutor {
     ///
     /// # Errors
     ///
+    /// Returns [`PipelineError::Governance`] if `head_branch` or `base_branch`
+    /// violates an active governance rule (only when governance is enabled and
+    /// `fail_on_violation` is `true` for a `Required` branch rule).
+    ///
     /// Returns [`PipelineError::Git`] if the GitHub API call fails.
     #[allow(clippy::too_many_arguments)]
     async fn run_create_pr(
@@ -1195,6 +1199,11 @@ impl WorkflowExecutor {
                 is_dry_run: false,
             });
         }
+
+        // Governance: validate branch names before contacting GitHub.
+        let governance = GovernanceChecker::from_config(&self.config.governance)?;
+        governance.check_branch(head_branch)?;
+        governance.check_branch(base_branch)?;
 
         // Resolve GitHub PAT; pass `None` to `GithubPrClient::new` when absent.
         let token = crate::clients::github::pr::resolve_github_pat();
@@ -2431,5 +2440,44 @@ mod tests {
             ),
             "stage should not be PrComplete when opt-in is false"
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_create_pr_with_governance_enabled_respects_check_branch() {
+        let ws_dir = TempDir::new().unwrap();
+        // Build a config with pr.enabled = true AND governance enabled.
+        // governance.rules_path = "" so no external file is loaded.
+        let mut config = Config::default();
+        config.workspace.root = ws_dir.path().to_str().unwrap().to_string();
+        config.pr.enabled = true;
+        config.governance.enabled = true;
+        config.governance.rules_path = String::new();
+        let executor = WorkflowExecutor::new(Arc::new(config), Arc::new(PluginRegistry::new()));
+
+        // A branch name with a valid format must not cause a governance error
+        // (the branch rule is Recommended, not Required, so it never blocks).
+        let input = ExecutionInput::CreatePr {
+            repository: ".".to_string(),
+            head_branch: "feature/valid-branch".to_string(),
+            base_branch: "main".to_string(),
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            title: "Test PR".to_string(),
+            body: None,
+            draft: false,
+            workspace: None,
+        };
+
+        // The PR client call will fail (no real token, no real GitHub server).
+        // We only care that the governance step runs without panicking and that
+        // failure, if any, is a Git or MissingToken error, NOT a Governance error.
+        let result = executor.execute(input).await;
+        // Either the call returns Ok (impossible without a token) or Err of the
+        // Git/PR kind -- the important thing is no Governance panic or error.
+        match result {
+            Ok(_) => {}                      // unexpected but not a failure
+            Err(PipelineError::Git(_)) => {} // expected: MissingToken maps to Git
+            Err(other) => panic!("expected Git error from missing token, got: {:?}", other),
+        }
     }
 }

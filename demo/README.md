@@ -16,6 +16,8 @@ Workflow plan files in `.yaml` format. Run them with `xzardgz run --plan`.
 - `simple_security_review.yaml` - Scan and run the security review plugin.
 - `security_review_local.yaml` - Thorough local security review with SARIF
   output.
+- `create_pr.yaml` - Configuration snippet showing how to enable GitHub pull
+  request creation.
 
 See [plans/README.md](plans/README.md) for details.
 

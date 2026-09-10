@@ -1,0 +1,39 @@
+# GitHub pull request creation configuration example.
+#
+# This file is NOT a workflow plan. It is a config.yaml snippet that shows how
+# to configure xzardgz to create a GitHub pull request after completing a
+# workflow run.
+#
+# Prerequisites:
+#   - Set XZARDGZ_GITHUB_TOKEN in your environment to a GitHub Personal Access
+#     Token with at least the `repo` scope:
+#
+#       export XZARDGZ_GITHUB_TOKEN=ghp_your_token_here
+#
+#   - Alternatively, store the token in the OS keyring under service
+#     "xzardgz-github" with key "github_token".
+#
+# Usage (programmatic, via WorkflowExecutor):
+#
+#   executor.execute(ExecutionInput::CreatePr {
+#       repository: ".".to_string(),
+#       head_branch: "feature/automated-fix".to_string(),
+#       base_branch: "main".to_string(),
+#       owner: "my-org".to_string(),
+#       repo: "my-repo".to_string(),
+#       title: "Automated remediation by xzardgz".to_string(),
+#       body: Some("This PR was created by xzardgz after a security review.".to_string()),
+#       draft: false,
+#       workspace: None,
+#   })
+#
+# Add this block to your config.yaml to enable pull request creation:
+
+pr:
+  # Set to true to enable pull request creation.
+  # Default: false (no PR activity occurs unless explicitly opted in).
+  enabled: true
+
+  # Set to true to open new pull requests as drafts.
+  # Default: false.
+  draft: false

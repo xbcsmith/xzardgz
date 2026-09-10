@@ -6,37 +6,10 @@
         "driver": {
           "name": "security-review",
           "version": "1.0.0",
-          "rules": [
-            {
-              "id": "secrets",
-              "shortDescription": {
-                "text": "secrets - CRITICAL security issue"
-              }
-            }
-          ]
+          "rules": []
         }
       },
-      "results": [
-        {
-          "ruleId": "secrets",
-          "message": {
-            "text": "data exposure [CWE-798] [A07:2021]\n\nRemediation: use env vars"
-          },
-          "level": "error",
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "src/main.rs"
-                },
-                "region": {
-                  "startLine": 10
-                }
-              }
-            }
-          ]
-        }
-      ]
+      "results": []
     }
   ]
 }

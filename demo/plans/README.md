@@ -71,6 +71,19 @@ xzardgz run --plan examples/plans/security_review_local.yaml --config config.yam
 
 Output: `.xzardgz/reports/` (Markdown, JSON, and SARIF)
 
+### `create_pr.yaml`
+
+A configuration snippet showing how to add GitHub pull request creation to your
+`config.yaml`. Copy the `pr:` block into your configuration file and set the
+`XZARDGZ_GITHUB_TOKEN` environment variable before running.
+
+Requirements:
+
+- A GitHub Personal Access Token with the `repo` scope, set as
+  `XZARDGZ_GITHUB_TOKEN`.
+- A pre-existing local branch (`head_branch`) to use as the PR source.
+- A target branch (`base_branch`) that differs from `head_branch`.
+
 ## Customising a Plan
 
 Common adjustments:
