@@ -217,6 +217,98 @@ impl KafkaConsumerConfig {
 
         Ok(config)
     }
+
+    /// Builds a [`KafkaConsumerConfig`] from the operator-facing
+    /// [`crate::config::KafkaConfig`] and a specific topic to consume from.
+    ///
+    /// This is the primary reconciliation point between the operator-facing
+    /// `config.yaml` Kafka section and the `XzeprConsumer` runtime configuration.
+    /// SASL credentials are resolved by reading the environment variable names
+    /// stored in `kafka.sasl_username_env` and `kafka.sasl_password_env`.  SSL is
+    /// configured when `kafka.ssl_ca_location` is set.
+    ///
+    /// # Arguments
+    ///
+    /// * `kafka` - Operator-facing Kafka configuration from `config.yaml`.
+    /// * `topic` - Topic name to consume from (e.g. `config.topics.task`).
+    ///
+    /// # Returns
+    ///
+    /// A [`KafkaConsumerConfig`] ready to be passed to [`crate::xzepr::consumer::kafka::XzeprConsumer::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::config::KafkaConfig;
+    /// use xzardgz::xzepr::consumer::KafkaConsumerConfig;
+    ///
+    /// let kafka = KafkaConfig::default();
+    /// let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "xzardgz.tasks");
+    /// assert_eq!(consumer_config.brokers, "localhost:9092");
+    /// assert_eq!(consumer_config.topic, "xzardgz.tasks");
+    /// assert_eq!(consumer_config.group_id, "xzardgz-workflow-harness");
+    /// ```
+    pub fn from_app_config(kafka: &crate::config::KafkaConfig, topic: &str) -> Self {
+        let brokers = kafka.brokers.join(",");
+
+        let security_protocol = match kafka.security_protocol.to_uppercase().as_str() {
+            "SSL" => SecurityProtocol::Ssl,
+            "SASL_PLAINTEXT" => SecurityProtocol::SaslPlaintext,
+            "SASL_SSL" => SecurityProtocol::SaslSsl,
+            _ => SecurityProtocol::Plaintext,
+        };
+
+        // Resolve SASL credentials from the named environment variables.
+        let sasl_config = if matches!(
+            security_protocol,
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
+        ) {
+            if let (Some(username_env), Some(password_env)) =
+                (&kafka.sasl_username_env, &kafka.sasl_password_env)
+            {
+                let username = std::env::var(username_env).unwrap_or_default();
+                let password = std::env::var(password_env).unwrap_or_default();
+                let mechanism = match kafka
+                    .sasl_mechanism
+                    .as_deref()
+                    .map(str::to_uppercase)
+                    .as_deref()
+                {
+                    Some("PLAIN") => SaslMechanism::Plain,
+                    Some("SCRAM-SHA-512") => SaslMechanism::ScramSha512,
+                    _ => SaslMechanism::ScramSha256,
+                };
+                Some(SaslConfig {
+                    mechanism,
+                    username,
+                    password,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let ssl_config = kafka.ssl_ca_location.as_ref().map(|ca| SslConfig {
+            ca_location: Some(ca.clone()),
+            certificate_location: None,
+            key_location: None,
+        });
+
+        Self {
+            brokers,
+            topic: topic.to_string(),
+            group_id: kafka.group_id.clone(),
+            service_name: "xzardgz".to_string(),
+            security_protocol,
+            sasl_config,
+            ssl_config,
+            auto_offset_reset: "latest".to_string(),
+            enable_auto_commit: true,
+            session_timeout: Duration::from_secs(30),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +381,133 @@ mod tests {
                 let result = KafkaConsumerConfig::from_env("test-service");
                 assert!(result.is_err());
                 assert!(matches!(result.unwrap_err(), ConfigError::MissingConfig(_)));
+            },
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // from_app_config
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_from_app_config_with_default_kafka_config_uses_plaintext() {
+        let kafka = crate::config::KafkaConfig::default();
+        let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+        assert_eq!(consumer_config.brokers, "localhost:9092");
+        assert_eq!(consumer_config.topic, "test.topic");
+        assert_eq!(consumer_config.group_id, "xzardgz-workflow-harness");
+        assert_eq!(consumer_config.service_name, "xzardgz");
+        assert!(matches!(
+            consumer_config.security_protocol,
+            SecurityProtocol::Plaintext
+        ));
+        assert!(consumer_config.sasl_config.is_none());
+        assert!(consumer_config.ssl_config.is_none());
+    }
+
+    #[test]
+    fn test_from_app_config_joins_multiple_brokers_with_comma() {
+        let kafka = crate::config::KafkaConfig {
+            brokers: vec!["kafka1:9092".to_string(), "kafka2:9092".to_string()],
+            ..crate::config::KafkaConfig::default()
+        };
+        let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+        assert_eq!(consumer_config.brokers, "kafka1:9092,kafka2:9092");
+    }
+
+    #[test]
+    fn test_from_app_config_ssl_protocol_sets_ssl_security() {
+        let kafka = crate::config::KafkaConfig {
+            security_protocol: "SSL".to_string(),
+            ssl_ca_location: Some("/etc/ssl/ca.pem".to_string()),
+            ..crate::config::KafkaConfig::default()
+        };
+        let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+        assert!(matches!(
+            consumer_config.security_protocol,
+            SecurityProtocol::Ssl
+        ));
+        let ssl = consumer_config.ssl_config.unwrap();
+        assert_eq!(ssl.ca_location, Some("/etc/ssl/ca.pem".to_string()));
+    }
+
+    #[test]
+    fn test_from_app_config_unknown_protocol_falls_back_to_plaintext() {
+        let kafka = crate::config::KafkaConfig {
+            security_protocol: "GARBAGE_PROTOCOL".to_string(),
+            ..crate::config::KafkaConfig::default()
+        };
+        let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+        assert!(matches!(
+            consumer_config.security_protocol,
+            SecurityProtocol::Plaintext
+        ));
+    }
+
+    #[test]
+    fn test_from_app_config_sasl_ssl_resolves_credentials_from_env() {
+        temp_env::with_vars(
+            [
+                ("TEST_SASL_USER", Some("myuser")),
+                ("TEST_SASL_PASS", Some("mypass")),
+            ],
+            || {
+                let kafka = crate::config::KafkaConfig {
+                    security_protocol: "SASL_SSL".to_string(),
+                    sasl_username_env: Some("TEST_SASL_USER".to_string()),
+                    sasl_password_env: Some("TEST_SASL_PASS".to_string()),
+                    sasl_mechanism: Some("SCRAM-SHA-256".to_string()),
+                    ..crate::config::KafkaConfig::default()
+                };
+                let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+                let sasl = consumer_config.sasl_config.unwrap();
+                assert_eq!(sasl.username, "myuser");
+                assert_eq!(sasl.password, "mypass");
+                assert!(matches!(sasl.mechanism, SaslMechanism::ScramSha256));
+            },
+        );
+    }
+
+    #[test]
+    fn test_from_app_config_sasl_plain_mechanism_is_respected() {
+        temp_env::with_vars(
+            [
+                ("TEST_PLAIN_USER", Some("user")),
+                ("TEST_PLAIN_PASS", Some("pass")),
+            ],
+            || {
+                let kafka = crate::config::KafkaConfig {
+                    security_protocol: "SASL_PLAINTEXT".to_string(),
+                    sasl_username_env: Some("TEST_PLAIN_USER".to_string()),
+                    sasl_password_env: Some("TEST_PLAIN_PASS".to_string()),
+                    sasl_mechanism: Some("PLAIN".to_string()),
+                    ..crate::config::KafkaConfig::default()
+                };
+                let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+                let sasl = consumer_config.sasl_config.unwrap();
+                assert!(matches!(sasl.mechanism, SaslMechanism::Plain));
+            },
+        );
+    }
+
+    #[test]
+    fn test_from_app_config_sasl_scram512_mechanism_is_respected() {
+        temp_env::with_vars(
+            [
+                ("TEST_512_USER", Some("user")),
+                ("TEST_512_PASS", Some("pass")),
+            ],
+            || {
+                let kafka = crate::config::KafkaConfig {
+                    security_protocol: "SASL_SSL".to_string(),
+                    sasl_username_env: Some("TEST_512_USER".to_string()),
+                    sasl_password_env: Some("TEST_512_PASS".to_string()),
+                    sasl_mechanism: Some("SCRAM-SHA-512".to_string()),
+                    ..crate::config::KafkaConfig::default()
+                };
+                let consumer_config = KafkaConsumerConfig::from_app_config(&kafka, "test.topic");
+                let sasl = consumer_config.sasl_config.unwrap();
+                assert!(matches!(sasl.mechanism, SaslMechanism::ScramSha512));
             },
         );
     }

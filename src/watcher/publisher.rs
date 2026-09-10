@@ -496,6 +496,37 @@ impl ResultPublisher for KafkaResultPublisher {
 }
 
 // ---------------------------------------------------------------------------
+// NoOpResultPublisher
+// ---------------------------------------------------------------------------
+
+/// A result publisher that discards all results without publishing.
+///
+/// Used when `config.watcher.result_publish_enabled` is `false` and a
+/// concrete [`ResultPublisher`] is still required by the type system.  Passing
+/// this to [`WatcherExecutor::process_task`][crate::watcher::executor::WatcherExecutor::process_task]
+/// is safe because the executor already guards the `publisher.publish()` call
+/// behind the `result_publish_enabled` flag and will not call it when
+/// publishing is disabled.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::watcher::publisher::NoOpResultPublisher;
+///
+/// let publisher = NoOpResultPublisher;
+/// // publisher.publish() will always return Ok(()) without any I/O.
+/// ```
+pub struct NoOpResultPublisher;
+
+#[async_trait]
+impl ResultPublisher for NoOpResultPublisher {
+    /// Discards the result and returns `Ok(())` immediately.
+    async fn publish(&self, _result: &WatcherResultMessage) -> crate::error::Result<()> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

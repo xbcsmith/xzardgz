@@ -10,6 +10,7 @@
 //!
 //! | Component | Responsibility |
 //! |-----------|----------------|
+//! | [`adapter`] | CloudEventMessage adapter and WatcherMessageHandler |
 //! | [`event_type`] | Event type enum and string constants |
 //! | [`task`] | Inbound task message schema |
 //! | [`result`] | Outbound result message schema |
@@ -32,6 +33,7 @@
 //! 6. If publishing fails, [`PublishFailureState`] can be persisted to disk
 //!    for retry without re-running the plugin.
 
+pub mod adapter;
 pub mod event_type;
 pub mod executor;
 pub mod matcher;
@@ -43,12 +45,15 @@ pub mod task;
 // Re-exports
 // ---------------------------------------------------------------------------
 
+pub use adapter::WatcherMessageHandler;
 pub use event_type::{
     EVENT_SECURITY_REVIEW_RESULT, EVENT_SECURITY_REVIEW_TASK, EVENT_TECHNICAL_REVIEW_RESULT,
     EVENT_TECHNICAL_REVIEW_TASK, WatcherEventType,
 };
 pub use executor::WatcherExecutor;
 pub use matcher::WatcherMatcher;
-pub use publisher::{KafkaResultPublisher, PublishFailureState, ResultPublisher};
+pub use publisher::{
+    KafkaResultPublisher, NoOpResultPublisher, PublishFailureState, ResultPublisher,
+};
 pub use result::{FindingsSummary, WATCHER_RESULT_VERSION, WatcherResultMessage};
 pub use task::{WATCHER_TASK_VERSION, WatcherTaskMessage};
