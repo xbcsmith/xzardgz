@@ -25,6 +25,17 @@ use xzardgz::watcher::executor::WatcherExecutor;
 use xzardgz::watcher::publisher::{PublishFailureState, ResultPublisher};
 use xzardgz::watcher::result::WatcherResultMessage;
 use xzardgz::watcher::task::{WATCHER_TASK_VERSION, WatcherTaskMessage};
+// ---------------------------------------------------------------------------
+// Additional imports for Phase 2.4 integration test only
+// ---------------------------------------------------------------------------
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use tokio::time::{Duration, timeout};
+use xzardgz::config::MatcherConfig;
+use xzardgz::watcher::WatcherMessageHandler;
+use xzardgz::watcher::matcher::WatcherMatcher;
+use xzardgz::xzepr::consumer::config::KafkaConsumerConfig;
+use xzardgz::xzepr::consumer::kafka::XzeprConsumer;
 
 // ---------------------------------------------------------------------------
 // TestPlugin
@@ -500,5 +511,160 @@ async fn test_watcher_result_has_correct_correlation_id() {
     assert_eq!(
         result.correlation_id, "test-corr-123",
         "result.correlation_id must equal the correlation_id on the originating task"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 -- full consume-execute-publish cycle via XzeprConsumer (Kafka)
+// ---------------------------------------------------------------------------
+
+/// Full consume-execute-publish cycle with a real XzeprConsumer.
+///
+/// This test requires a running Kafka broker. Set the `KAFKA_BROKERS`
+/// environment variable (e.g. `localhost:9092`) before running with
+/// `cargo test -- --include-ignored`.
+///
+/// The test:
+/// 1. Produces a well-formed `CloudEventMessage` to the task topic via
+///    `rdkafka::FutureProducer`.
+/// 2. Starts `XzeprConsumer` with `WatcherMessageHandler` and a capturing
+///    publisher.
+/// 3. Asserts the resulting `WatcherResultMessage.correlation_id` equals the
+///    `correlation_id` embedded in the payload.
+#[tokio::test]
+#[ignore = "requires a running Kafka broker; set KAFKA_BROKERS env var and run with --include-ignored"]
+async fn test_watch_consume_execute_publish_cycle_with_real_kafka() {
+    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
+    let task_topic = format!("xzardgz.test.task.{}", ulid::Ulid::new());
+    let correlation_id = "integ-xzepr-corr-001";
+
+    // Step 1: produce a CloudEventMessage to the task topic.
+    let mut producer_config = ClientConfig::new();
+    producer_config.set("bootstrap.servers", &brokers);
+    let producer: FutureProducer = producer_config
+        .create()
+        // SAFETY: ClientConfig::create only performs local rdkafka initialisation;
+        // it does not make network calls, so it cannot fail with a valid config.
+        .expect("SAFETY: producer creation should succeed with valid brokers");
+
+    let payload = serde_json::json!({
+        "id": ulid::Ulid::new().to_string(),
+        "type": "xzardgz.technical_review.task",
+        "source": "test-producer",
+        "specversion": "1.0.1",
+        "success": true,
+        "api_version": "1.0",
+        "name": "test",
+        "version": "1.0.0",
+        "release": "1.0.0",
+        "platform_id": "test",
+        "package": "test",
+        "data": {
+            "events": [{
+                "id": ulid::Ulid::new().to_string(),
+                "name": "test",
+                "version": "1.0.0",
+                "release": "1.0.0",
+                "platform_id": "test",
+                "package": "test",
+                "description": "test",
+                "success": true,
+                "created_at": "2024-01-01T00:00:00Z",
+                "event_receiver_id": "test-receiver",
+                "payload": {
+                    "correlation_id": correlation_id,
+                    "repository": "https://github.com/test/repo",
+                    "target_branch": "main",
+                    "dry_run": true
+                }
+            }],
+            "event_receivers": [],
+            "event_receiver_groups": []
+        }
+    });
+
+    let payload_str = serde_json::to_string(&payload)
+        // SAFETY: serde_json::json! produces a well-formed Value; serialization cannot fail.
+        .expect("SAFETY: static JSON value; serialization cannot fail");
+    let record = FutureRecord::to(&task_topic)
+        .payload(payload_str.as_str())
+        .key("test-key");
+
+    producer
+        .send(
+            record,
+            rdkafka::util::Timeout::After(Duration::from_secs(5)),
+        )
+        .await
+        // SAFETY: the test only runs against a live broker (see #[ignore]); at
+        // runtime the broker is reachable and message delivery must succeed.
+        .expect("SAFETY: message delivery to live broker should succeed");
+
+    // Step 2: build consumer infrastructure.
+    let captured: Arc<Mutex<Vec<WatcherResultMessage>>> = Arc::new(Mutex::new(vec![]));
+
+    // Inline capturing publisher for this test only.
+    struct CapturingPublisher {
+        results: Arc<Mutex<Vec<WatcherResultMessage>>>,
+    }
+    #[async_trait]
+    impl ResultPublisher for CapturingPublisher {
+        async fn publish(&self, result: &WatcherResultMessage) -> xzardgz::error::Result<()> {
+            self.results.lock().await.push(result.clone());
+            Ok(())
+        }
+    }
+
+    let publisher = Arc::new(CapturingPublisher {
+        results: captured.clone(),
+    });
+
+    // Use an empty matcher so all event types and plugins are forwarded to the
+    // executor. The default MatcherConfig contains event_types like
+    // "xzardgz.technical_review.requested" which do not match the adapter's
+    // output of "xzardgz.technical_review.task", so we clear both lists.
+    let mut matcher_config = MatcherConfig::default();
+    matcher_config.event_types.clear();
+    matcher_config.plugins.clear();
+    let matcher = Arc::new(WatcherMatcher::from_config(&matcher_config));
+
+    // Register "technical-review", the plugin name that cloud_event_to_task
+    // derives deterministically from the "xzardgz.technical_review.task" type.
+    let mut registry = PluginRegistry::new();
+    registry.register(Arc::new(TestPlugin {
+        name: "technical-review",
+    }));
+    let registry = Arc::new(registry);
+
+    // result_publish_enabled = true so the capturing publisher is invoked.
+    let config = make_test_config(true);
+    let executor = Arc::new(WatcherExecutor::new(config, registry));
+
+    let handler = Arc::new(WatcherMessageHandler::new(executor, matcher, publisher));
+
+    // KafkaConsumerConfig::new defaults to auto_offset_reset = "earliest",
+    // ensuring the consumer reads the message produced above even when it
+    // subscribes after the message was delivered to the topic.
+    let consumer_config = KafkaConsumerConfig::new(&brokers, &task_topic, "xzardgz-integ-test")
+        .with_group_id(&format!("xzardgz-test-{}", ulid::Ulid::new()));
+    let consumer = XzeprConsumer::new(consumer_config)
+        // SAFETY: the test only runs against a live broker (see #[ignore]); at
+        // runtime the broker is reachable and consumer creation must succeed.
+        .expect("SAFETY: consumer creation should succeed");
+
+    // Step 3: run the consumer with a timeout to process the one message.
+    // The consumer loops indefinitely; the timeout cancels it after 10 seconds,
+    // by which point the single produced message will have been processed.
+    let _ = timeout(Duration::from_secs(10), consumer.run(handler)).await;
+
+    // Step 4: assert the captured result has the correct correlation_id.
+    let results = captured.lock().await;
+    assert!(
+        !results.is_empty(),
+        "expected at least one WatcherResultMessage to be published"
+    );
+    assert_eq!(
+        results[0].correlation_id, correlation_id,
+        "correlation_id must survive the full consume-execute-publish cycle"
     );
 }

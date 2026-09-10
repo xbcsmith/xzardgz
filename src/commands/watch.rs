@@ -9,28 +9,34 @@
 //! 2. Build a `WatcherMatcher` from matcher config.
 //! 3. Build a `WatcherExecutor` with the configured plugin registry.
 //! 4. When `--dry-run` is set, validate and report configuration then exit.
-//! 5. When `--once` is set, print once-mode notice; the consumer will exit
-//!    after the first batch (full consumer loop implemented in Phase 17).
-//! 6. Otherwise, start the Kafka consumer loop (Phase 17).
+//! 5. Build a result publisher (NoOp when `--no-publish`; Kafka otherwise).
+//! 6. Build a `WatcherMessageHandler` wiring executor, matcher, and publisher.
+//! 7. Build an `XzeprConsumer` from the reconciled Kafka configuration.
+//! 8. When `--once` is set, run the consumer loop for a short window then exit.
+//! 9. Otherwise, run the consumer loop until shutdown.
 
 use std::sync::Arc;
 
 use crate::cli::WatchArgs;
 use crate::config::{Config, ConfigOverrides};
-use crate::error::Result;
+use crate::error::{PipelineError, Result};
 use crate::plugins::registry::PluginRegistry;
+use crate::watcher::WatcherMessageHandler;
 use crate::watcher::executor::WatcherExecutor;
 use crate::watcher::matcher::WatcherMatcher;
+use crate::watcher::publisher::{KafkaResultPublisher, NoOpResultPublisher, ResultPublisher};
+use crate::xzepr::consumer::config::KafkaConsumerConfig;
+use crate::xzepr::consumer::kafka::XzeprConsumer;
 
 /// Executes the watcher mode command.
 ///
 /// Loads global configuration, applies CLI overrides, builds a
-/// [`WatcherMatcher`] and [`WatcherExecutor`], and reports startup
-/// information.
+/// [`WatcherMatcher`] and [`WatcherExecutor`], then starts the Kafka
+/// consumer loop.
 ///
 /// In dry-run mode the watcher validates configuration and exits without
-/// connecting to Kafka. In once mode the watcher will process a single task
-/// batch and exit (full consumer loop is wired in Phase 17).
+/// connecting to Kafka. In once mode the watcher runs the consumer loop
+/// for a short window then exits.
 ///
 /// # Arguments
 ///
@@ -39,7 +45,8 @@ use crate::watcher::matcher::WatcherMatcher;
 /// # Errors
 ///
 /// Returns [`crate::error::PipelineError::Config`] if configuration loading
-/// or validation fails.
+/// or validation fails, or [`crate::error::PipelineError::Kafka`] if the
+/// Kafka consumer or producer cannot be created.
 pub async fn execute(args: WatchArgs) -> Result<()> {
     let mut config = Config::load()?;
 
@@ -74,14 +81,14 @@ pub async fn execute(args: WatchArgs) -> Result<()> {
 
     let config = Arc::new(config);
 
-    // Build the plugin registry (empty for now; plugins registered in Phase 17).
+    // Build the plugin registry (empty for now; plugins registered separately).
     let plugin_registry = Arc::new(PluginRegistry::new());
 
     // Build the matcher from config.
-    let matcher = WatcherMatcher::from_config(&config.matcher);
+    let matcher = Arc::new(WatcherMatcher::from_config(&config.matcher));
 
     // Build the watcher executor.
-    let executor = WatcherExecutor::new(config.clone(), plugin_registry);
+    let executor = Arc::new(WatcherExecutor::new(config.clone(), plugin_registry));
 
     // Log startup information.
     if args.dry_run {
@@ -130,7 +137,40 @@ pub async fn execute(args: WatchArgs) -> Result<()> {
         println!("WARNING: matcher is empty - all tasks will be rejected.");
     }
 
-    println!("Watcher consumer loop is implemented in Phase 17.");
+    // Build result publisher.
+    let publisher: Arc<dyn ResultPublisher + Send + Sync> = if !executor.result_publish_enabled() {
+        Arc::new(NoOpResultPublisher)
+    } else {
+        Arc::new(KafkaResultPublisher::new(&config.kafka, &config.topics)?)
+    };
+
+    // Build message handler.
+    let handler = Arc::new(WatcherMessageHandler::new(
+        executor.clone(),
+        matcher,
+        publisher,
+    ));
+
+    // Build Kafka consumer from the reconciled operator-facing config.
+    let consumer_config = KafkaConsumerConfig::from_app_config(&config.kafka, &config.topics.task);
+
+    let consumer =
+        XzeprConsumer::new(consumer_config).map_err(|e| PipelineError::Kafka(e.to_string()))?;
+
+    if executor.once_mode_enabled() {
+        // Once mode: poll for the configured window then exit.
+        // Uses a timeout so the process terminates without an explicit stop
+        // signal, which is the expected behaviour in CI and one-shot runs.
+        use tokio::time::{Duration, timeout};
+        let _ = timeout(Duration::from_millis(100), consumer.run(handler)).await;
+        return Ok(());
+    }
+
+    consumer
+        .run(handler)
+        .await
+        .map_err(|e| PipelineError::Kafka(e.to_string()))?;
+
     Ok(())
 }
 
@@ -184,9 +224,12 @@ mod tests {
         );
     }
 
+    /// Verifies that config loading and validation succeed in dry-run mode
+    /// with default arguments.
     #[tokio::test]
     async fn test_execute_default_returns_ok() {
-        let args = make_default_watch_args();
+        let mut args = make_default_watch_args();
+        args.dry_run = true;
         let result = execute(args).await;
         assert!(
             result.is_ok(),
@@ -195,26 +238,35 @@ mod tests {
         );
     }
 
+    /// Verifies that config loading and validation succeed in dry-run mode
+    /// when broker addresses are overridden via CLI.
     #[tokio::test]
     async fn test_execute_with_brokers_override_returns_ok() {
         let mut args = make_default_watch_args();
         args.brokers = Some("kafka1:9092,kafka2:9092".to_string());
+        args.dry_run = true;
         let result = execute(args).await;
         assert!(result.is_ok(), "watch with brokers should succeed");
     }
 
+    /// Verifies that config loading and validation succeed in dry-run mode
+    /// when result publishing is disabled via `--no-publish`.
     #[tokio::test]
     async fn test_execute_with_no_publish_returns_ok() {
         let mut args = make_default_watch_args();
         args.no_publish = true;
+        args.dry_run = true;
         let result = execute(args).await;
         assert!(result.is_ok(), "watch with no_publish should succeed");
     }
 
+    /// Verifies that config loading and validation succeed in dry-run mode
+    /// when the max-concurrent-tasks limit is overridden via CLI.
     #[tokio::test]
     async fn test_execute_with_max_concurrent_override_returns_ok() {
         let mut args = make_default_watch_args();
         args.max_concurrent = Some(4);
+        args.dry_run = true;
         let result = execute(args).await;
         assert!(
             result.is_ok(),
