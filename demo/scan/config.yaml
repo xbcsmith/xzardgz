@@ -1,0 +1,20 @@
+# Demo configuration for the scan walk-through.
+# Run all commands from the repository root:
+#   xzardgz scan --repository demo/scan/fixture-repo \
+#                --output /tmp/xzardgz-demo-scan.json \
+#                --config demo/scan/config.yaml
+
+scanner:
+  include_hidden: false
+  follow_symlinks: false
+  max_file_size_bytes: 1048576
+  ignore_patterns:
+    - ".git"
+    - "__pycache__"
+    - "*.pyc"
+    - "node_modules"
+    - "target"
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: false

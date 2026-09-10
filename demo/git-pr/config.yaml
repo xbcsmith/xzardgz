@@ -1,0 +1,38 @@
+# Demo configuration for the git write operations and PR creation walk-through.
+#
+# Pull request creation is opt-in. Set pr.enabled: true and supply
+# XZARDGZ_GITHUB_TOKEN (a GitHub Personal Access Token with repo scope) to
+# enable the PR creation step.
+#
+# Run all commands from the repository root.
+
+provider:
+  default: "openai"
+  allow_fallback: false
+
+openai:
+  api_key_env: "OPENAI_API_KEY"
+  model: "gpt-4.1-mini"
+
+git:
+  clone_depth: 1
+  fetch_tags: false
+  clean_before_run: false
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: false
+
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - "markdown"
+    - "json"
+  overwrite: true
+  include_diagnostics: false
+
+# Pull request creation.
+# Set enabled: true and export XZARDGZ_GITHUB_TOKEN to activate.
+pr:
+  enabled: false
+  draft: false

@@ -1,0 +1,47 @@
+# Demo configuration for the security-review walk-through.
+# Run all commands from the repository root.
+#
+# Scenario A (offline dry run): no API key required.
+# Scenario B (live local run): set OPENAI_API_KEY.
+# Scenario C (live GitHub run): set OPENAI_API_KEY.
+
+provider:
+  default: "openai"
+  allow_fallback: false
+
+openai:
+  api_key_env: "OPENAI_API_KEY"
+  model: "gpt-4.1-mini"
+
+scanner:
+  include_hidden: false
+  follow_symlinks: false
+  max_file_size_bytes: 1048576
+  ignore_patterns:
+    - ".git"
+    - "__pycache__"
+    - "*.pyc"
+    - "node_modules"
+    - "target"
+
+security_review:
+  max_findings: 20
+  severity_threshold: "medium"
+  include_sarif: true
+  report_formats:
+    - "markdown"
+    - "json"
+    - "sarif"
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: false
+
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - "markdown"
+    - "json"
+    - "sarif"
+  overwrite: true
+  include_diagnostics: false

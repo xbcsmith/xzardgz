@@ -1,0 +1,40 @@
+# Demo configuration for the watcher walk-through.
+# Run all commands from the repository root:
+#   xzardgz watch --dry-run --config demo/watcher/config.yaml
+
+kafka:
+  brokers:
+    - "localhost:9092"
+  group_id: "xzardgz-demo-watcher"
+  security_protocol: "PLAINTEXT"
+  sasl_mechanism: null
+  sasl_username_env: null
+  sasl_password_env: null
+  ssl_ca_location: null
+
+topics:
+  task: "xzardgz.demo.tasks"
+  result: "xzardgz.demo.results"
+
+matcher:
+  event_types:
+    - "xzardgz.technical_review.task"
+    - "xzardgz.security_review.task"
+  repositories: []
+  plugins:
+    - "technical-review"
+    - "security-review"
+  platforms: []
+  metadata: {}
+
+watcher:
+  enabled: true
+  max_concurrent_tasks: 2
+  result_publish_enabled: true
+  once: false
+
+plugins:
+  default: "technical-review"
+  enabled:
+    - "technical-review"
+    - "security-review"

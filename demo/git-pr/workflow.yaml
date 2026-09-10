@@ -1,0 +1,48 @@
+version: "1"
+name: "technical review with pr creation"
+description: "Run a technical review, write the report to a branch, and open a GitHub pull request. Requires XZARDGZ_GITHUB_TOKEN and pr.enabled: true in config.yaml."
+
+repository:
+  url: "https://github.com/YOUR_ORG/YOUR_REPO"
+  branch: "main"
+
+workspace:
+  root: ".xzardgz/workspaces"
+  resume: false
+
+provider:
+  name: "openai"
+  model: "gpt-4.1-mini"
+
+scan:
+  output: ".xzardgz/scan/git_pr_demo_scan.json"
+  ignore_patterns:
+    - ".git"
+    - "node_modules"
+    - "target"
+    - "__pycache__"
+
+steps:
+  - id: "scan"
+    type: "scan"
+    description: "Scan repository structure and produce scan artifact"
+
+  - id: "technical_review"
+    type: "plugin"
+    description: "Run the technical review plugin and produce reports"
+    plugin: "technical-review"
+    depends_on:
+      - "scan"
+    config:
+      max_findings: 20
+      severity_threshold: "medium"
+      focus_areas:
+        - "architecture"
+        - "reliability"
+        - "maintainability"
+
+reports:
+  output_dir: ".xzardgz/reports"
+  formats:
+    - "markdown"
+    - "json"

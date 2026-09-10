@@ -9,6 +9,43 @@ against the bundled repository without cloning any external project.
 
 ## Subdirectories
 
+### `scan/`
+
+End-to-end walkthrough for the `xzardgz scan` command. Scans the bundled
+`fixture-repo/` Python data pipeline and produces a scan artifact JSON file.
+Requires no API key or network access.
+
+- `config.yaml` - Demo-specific scanner configuration.
+- `fixture-repo/` - Minimal Python data-processing project.
+
+See [scan/README.md](scan/README.md) for the step-by-step walkthrough.
+
+### `security-review/`
+
+End-to-end walkthrough for the `xzardgz run --plugin security-review` command.
+Covers three scenarios: offline dry-run (no API key), live local run against the
+bundled `fixture-repo/` Python auth service, and a live run against the real
+public [pallets/jinja](https://github.com/pallets/jinja) GitHub repository.
+
+- `config.yaml` - Demo-specific security review configuration.
+- `fixture-repo/` - Minimal Python authentication service fixture.
+
+See [security-review/README.md](security-review/README.md) for the step-by-step
+walkthrough.
+
+### `git-pr/`
+
+End-to-end walkthrough for the git write primitives and GitHub pull request
+creation workflow. Covers branch creation, committing report output, pushing to
+a remote, and opening a PR. Requires `XZARDGZ_GITHUB_TOKEN` for the PR creation
+stage.
+
+- `config.yaml` - Demo configuration with `pr.enabled: false` by default.
+- `workflow.yaml` - Technical review workflow plan used as the PR source.
+- `fixture-repo/` - Minimal placeholder repository for the git operations demo.
+
+See [git-pr/README.md](git-pr/README.md) for the step-by-step walkthrough.
+
 ### `mcp/`
 
 End-to-end walkthrough for MCP (Model Context Protocol) server configuration.
@@ -18,9 +55,23 @@ Validates and introspects a filesystem MCP server against the bundled
 - `config.yaml` - Demo-specific xzardgz configuration.
 - `mcp_server_config.yaml` - Annotated server definitions to copy into your own
   `config.yaml`.
-- `fixture-repo/` - Minimal Python project used as the analysis target.
+- `fixture-repo/` - Minimal Python greeting service used as the analysis target.
 
 See [mcp/README.md](mcp/README.md) for the step-by-step walkthrough.
+
+### `watcher/`
+
+End-to-end walkthrough for the Kafka-backed watcher mode. Covers offline dry-run
+validation (no Kafka required), starting the live consumer loop, and publishing
+XZepr-shaped `CloudEventMessage` task messages.
+
+- `config.yaml` - Demo watcher configuration with matcher rules.
+- `technical_review_task.json` - Reference payload schema for technical review
+  tasks.
+- `security_review_task.json` - Reference payload schema for security review
+  tasks.
+
+See [watcher/README.md](watcher/README.md) for the step-by-step walkthrough.
 
 ### `plans/`
 
@@ -36,16 +87,6 @@ Workflow plan files in `.yaml` format. Run them with `xzardgz run --plan`.
   request creation.
 
 See [plans/README.md](plans/README.md) for details.
-
-### `watcher/`
-
-Example Kafka task messages in JSON format. Publish them to your watcher input
-topic to test watcher mode without a live CI system.
-
-- `technical_review_task.json` - Task message for a technical review.
-- `security_review_task.json` - Task message for a security review.
-
-See [watcher/README.md](watcher/README.md) for details.
 
 ### `kafka/`
 
@@ -81,8 +122,9 @@ Demos that call AI providers additionally require:
 - `OPENAI_API_KEY` set in your environment (or the provider configured
   differently in `config.yaml`).
 
-The `mcp/` demo also requires Node.js 18 or later for the `list-tools` step; the
-`validate` and `list-servers` steps work without it.
+The `mcp/` demo also requires Node.js 18 or later for the `list-tools` step. The
+`watcher/` live consumer loop requires a running Kafka broker. The `git-pr/` PR
+creation stage requires `XZARDGZ_GITHUB_TOKEN`.
 
 ## Further Reading
 
