@@ -1,19 +1,34 @@
 {
   "version": "1",
-  "report_id": "01M25Y07F9KHVJ4174BYN9H8G0",
-  "generated_at": "2026-09-10T15:11:55.881317Z",
+  "report_id": "01M25YN4BVA52HB2PYPH4S3N7F",
+  "generated_at": "2026-09-10T15:23:20.827840Z",
   "plugin_name": "technical-review",
   "repository_name": "test-repo",
   "repository_url": "https://github.com/org/test-repo",
   "head_commit": null,
-  "workspace_id": "01M25Y073WP5GJRDZN1WFVB6MQ",
+  "workspace_id": "01M25YN426W19XHBM2BKAYPHNN",
   "scan_artifact_version": null,
   "provider_metadata": null,
   "model_id": null,
   "findings": {
-    "findings": []
+    "findings": [
+      {
+        "kind": "architecture",
+        "title": "HIGH: Reduced testability and maintainability.",
+        "description": "Tight coupling between modules.\n\nImpact: Reduced testability and maintainability.\n\nRecommendation: Introduce dependency inversion.",
+        "file_path": null,
+        "line": null,
+        "severity": "High",
+        "confidence": 0.895,
+        "tags": [
+          "architecture"
+        ],
+        "static_score": 0.4,
+        "ai_score": 0.95
+      }
+    ]
   },
   "diagnostics": [],
-  "risk_band": null,
+  "risk_band": "High",
   "scores": {}
 }
