@@ -45,6 +45,22 @@ pub enum WorkspaceStage {
     /// All reports have been written successfully.
     ReportComplete,
 
+    /// A pull request is being created for a feature branch.
+    PrCreating {
+        /// The feature branch being submitted as a PR.
+        branch: String,
+    },
+
+    /// A pull request was successfully created.
+    PrComplete {
+        /// The feature branch submitted as a PR.
+        branch: String,
+        /// The GitHub pull request number.
+        pr_number: u64,
+        /// The GitHub pull request HTML URL.
+        pr_url: String,
+    },
+
     /// Watcher result is being published to Kafka.
     Publishing,
 
@@ -127,6 +143,8 @@ impl WorkspaceStage {
             WorkspaceStage::PluginComplete { .. } => "plugin_complete",
             WorkspaceStage::ReportWriting => "report_writing",
             WorkspaceStage::ReportComplete => "report_complete",
+            WorkspaceStage::PrCreating { .. } => "pr_creating",
+            WorkspaceStage::PrComplete { .. } => "pr_complete",
             WorkspaceStage::Publishing => "publishing",
             WorkspaceStage::Complete => "complete",
             WorkspaceStage::Failed { .. } => "failed",
@@ -180,6 +198,14 @@ mod tests {
             make_plugin_complete(),
             WorkspaceStage::ReportWriting,
             WorkspaceStage::ReportComplete,
+            WorkspaceStage::PrCreating {
+                branch: "feature/test".to_string(),
+            },
+            WorkspaceStage::PrComplete {
+                branch: "feature/test".to_string(),
+                pr_number: 1,
+                pr_url: "https://github.com/owner/repo/pull/1".to_string(),
+            },
             WorkspaceStage::Publishing,
             make_failed(),
         ];
@@ -238,9 +264,87 @@ mod tests {
         assert_eq!(make_plugin_complete().label(), "plugin_complete");
         assert_eq!(WorkspaceStage::ReportWriting.label(), "report_writing");
         assert_eq!(WorkspaceStage::ReportComplete.label(), "report_complete");
+        assert_eq!(
+            WorkspaceStage::PrCreating {
+                branch: "feature/test".to_string(),
+            }
+            .label(),
+            "pr_creating"
+        );
+        assert_eq!(
+            WorkspaceStage::PrComplete {
+                branch: "feature/test".to_string(),
+                pr_number: 42,
+                pr_url: "https://github.com/owner/repo/pull/42".to_string(),
+            }
+            .label(),
+            "pr_complete"
+        );
         assert_eq!(WorkspaceStage::Publishing.label(), "publishing");
         assert_eq!(WorkspaceStage::Complete.label(), "complete");
         assert_eq!(make_failed().label(), "failed");
+    }
+
+    #[test]
+    fn test_pr_creating_label_returns_expected_string() {
+        let stage = WorkspaceStage::PrCreating {
+            branch: "feature/test".to_string(),
+        };
+        assert_eq!(stage.label(), "pr_creating");
+    }
+
+    #[test]
+    fn test_pr_complete_label_returns_expected_string() {
+        let stage = WorkspaceStage::PrComplete {
+            branch: "feature/test".to_string(),
+            pr_number: 42,
+            pr_url: "https://github.com/owner/repo/pull/42".to_string(),
+        };
+        assert_eq!(stage.label(), "pr_complete");
+    }
+
+    #[test]
+    fn test_pr_creating_is_not_complete_or_failed() {
+        let stage = WorkspaceStage::PrCreating {
+            branch: "feature/test".to_string(),
+        };
+        assert!(!stage.is_complete());
+        assert!(!stage.is_failed());
+        assert!(!stage.is_terminal());
+    }
+
+    #[test]
+    fn test_pr_complete_is_not_terminal() {
+        let stage = WorkspaceStage::PrComplete {
+            branch: "feature/test".to_string(),
+            pr_number: 1,
+            pr_url: "https://github.com/owner/repo/pull/1".to_string(),
+        };
+        assert!(!stage.is_terminal());
+    }
+
+    #[test]
+    fn test_pr_creating_serializes_and_deserializes_correctly() {
+        let stage = WorkspaceStage::PrCreating {
+            branch: "feature/my-branch".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&stage).expect("serialization must not fail");
+        let restored: WorkspaceStage =
+            serde_yaml::from_str(&yaml).expect("deserialization must not fail");
+        assert_eq!(stage, restored);
+    }
+
+    #[test]
+    fn test_pr_complete_serializes_and_deserializes_correctly() {
+        let stage = WorkspaceStage::PrComplete {
+            branch: "feature/my-branch".to_string(),
+            pr_number: 99,
+            pr_url: "https://github.com/owner/repo/pull/99".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&stage).expect("serialization must not fail");
+        let restored: WorkspaceStage =
+            serde_yaml::from_str(&yaml).expect("deserialization must not fail");
+        assert_eq!(stage, restored);
     }
 
     // ------------------------------------------------------------------

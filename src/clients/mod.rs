@@ -15,10 +15,12 @@
 //! These rules ensure the data-fetching layer remains a pure leaf in the
 //! dependency graph and does not introduce circular imports.
 
+pub mod github;
 pub mod repodata;
 pub mod scorecard;
 pub mod vuln;
 
+pub use github::{GithubPrClient, PrClientError, PrInput, PrOutput};
 pub use repodata::{RepoDataResolveError, RepoMetadata};
 pub use scorecard::{ScorecardCheck, ScorecardResolveError, ScorecardResult};
 

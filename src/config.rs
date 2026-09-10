@@ -106,6 +106,9 @@ pub struct Config {
     /// Project identity metadata.
     #[serde(default)]
     pub project: ProjectConfig,
+    /// Pull request creation configuration.
+    #[serde(default)]
+    pub pr: PrConfig,
 }
 
 impl Config {
@@ -1342,6 +1345,34 @@ impl Default for ProjectConfig {
     }
 }
 
+/// Configuration for GitHub pull request creation.
+///
+/// PR creation is disabled by default and requires explicit opt-in via
+/// `pr.enabled: true` in the configuration file or the `--create-pr` flag.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::config::PrConfig;
+///
+/// let config = PrConfig::default();
+/// assert!(!config.enabled, "PR creation is disabled by default");
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrConfig {
+    /// When `true`, pull request creation is active.
+    ///
+    /// Defaults to `false`; must be set explicitly to opt in.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// When `true`, newly created pull requests are opened as drafts.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub draft: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Override types
 // ---------------------------------------------------------------------------
@@ -1593,5 +1624,23 @@ mod tests {
         assert_eq!(cfg.investigation_threshold_files, Some(30));
         assert_eq!(cfg.investigation_threshold_bytes, Some(8_000_000));
         assert_eq!(cfg.investigation_batch_count, Some(6));
+    }
+
+    #[test]
+    fn test_pr_config_enabled_defaults_to_false() {
+        let config = PrConfig::default();
+        assert!(!config.enabled, "PR creation must be disabled by default");
+    }
+
+    #[test]
+    fn test_pr_config_draft_defaults_to_false() {
+        let config = PrConfig::default();
+        assert!(!config.draft);
+    }
+
+    #[test]
+    fn test_config_pr_field_defaults_to_disabled() {
+        let config = Config::default();
+        assert!(!config.pr.enabled, "PR must be disabled in default Config");
     }
 }

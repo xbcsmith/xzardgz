@@ -8,6 +8,7 @@
 //! - Scan-only execution (`ExecutionInput::ScanOnly`)
 //! - Plugin-only execution against previously-collected scan data
 //!   (`ExecutionInput::PluginOnly`)
+//! - Pull request creation (`ExecutionInput::CreatePr`)
 //! - Dry-run mode (validates without side effects)
 //! - Resume from existing workspace state
 //!
@@ -77,7 +78,7 @@ use crate::workspace::stage::WorkspaceStage;
 
 /// Input descriptor for a workflow execution run.
 ///
-/// Four modes are supported:
+/// Five modes are supported:
 ///
 /// - [`LocalPlan`][ExecutionInput::LocalPlan] — a full workflow plan
 ///   constructed from a file or programmatically.
@@ -88,6 +89,9 @@ use crate::workspace::stage::WorkspaceStage;
 /// - [`PluginOnly`][ExecutionInput::PluginOnly] — runs a single plugin
 ///   against previously-collected scan data, without resolving a
 ///   repository or running the scanner.
+/// - [`CreatePr`][ExecutionInput::CreatePr] — creates a GitHub pull request
+///   for a feature branch; returns an immediate no-op when
+///   `config.pr.enabled` is `false`.
 ///
 /// # Examples
 ///
@@ -170,6 +174,33 @@ pub enum ExecutionInput {
         /// Output directory override for generated reports. `None` uses the
         /// workspace's default report location.
         output_dir: Option<String>,
+    },
+    /// Creates a GitHub pull request for a feature branch.
+    ///
+    /// When `config.pr.enabled` is `false` this variant returns an immediate
+    /// successful no-op result without any commit, push, or PR activity.
+    CreatePr {
+        /// Local path to an existing git checkout.
+        repository: String,
+        /// Branch to use as the PR head (source branch).
+        head_branch: String,
+        /// Branch to use as the PR base (target/destination branch).
+        ///
+        /// Must be supplied explicitly; the executor never auto-discovers the
+        /// repository default branch.
+        base_branch: String,
+        /// GitHub repository owner (username or organisation).
+        owner: String,
+        /// GitHub repository name.
+        repo: String,
+        /// Pull request title.
+        title: String,
+        /// Optional pull request body/description.
+        body: Option<String>,
+        /// When `true`, create the PR as a draft.
+        draft: bool,
+        /// Workspace root override. Falls back to `config.workspace.root` when `None`.
+        workspace: Option<String>,
     },
 }
 
@@ -385,6 +416,30 @@ impl WorkflowExecutor {
                     dry_run,
                     report_formats,
                     output_dir,
+                )
+                .await
+            }
+            ExecutionInput::CreatePr {
+                repository,
+                head_branch,
+                base_branch,
+                owner,
+                repo,
+                title,
+                body,
+                draft,
+                workspace,
+            } => {
+                self.run_create_pr(
+                    &repository,
+                    &head_branch,
+                    &base_branch,
+                    &owner,
+                    &repo,
+                    &title,
+                    body.as_deref(),
+                    draft,
+                    workspace.as_deref(),
                 )
                 .await
             }
@@ -1072,6 +1127,109 @@ impl WorkflowExecutor {
             stage_at_completion: final_state.current_stage,
             started_at,
             completed_at,
+            is_dry_run: false,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Private: pull request creation
+    // -----------------------------------------------------------------------
+
+    /// Creates a GitHub pull request for the given head branch.
+    ///
+    /// When `config.pr.enabled` is `false`, returns an immediate no-op success
+    /// result without contacting GitHub.  Otherwise, resolves a GitHub PAT and
+    /// calls [`crate::clients::github::GithubPrClient::create_pr`].
+    ///
+    /// # Arguments
+    ///
+    /// * `_repository` - Local repository path (reserved for future use when
+    ///   push integration is added).
+    /// * `head_branch` - The source branch for the PR.
+    /// * `base_branch` - The target branch for the PR. Must differ from
+    ///   `head_branch`.
+    /// * `owner` - GitHub repository owner.
+    /// * `repo` - GitHub repository name.
+    /// * `title` - Pull request title.
+    /// * `body` - Optional pull request description.
+    /// * `draft` - When `true`, opens the PR as a draft.
+    /// * `_workspace` - Workspace root override (reserved for future use).
+    ///
+    /// # Returns
+    ///
+    /// An [`ExecutionResult`] with `stage_at_completion` set to
+    /// [`WorkspaceStage::Complete`] for the no-op path, or
+    /// [`WorkspaceStage::PrComplete`] on successful PR creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipelineError::Git`] if the GitHub API call fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_create_pr(
+        &self,
+        _repository: &str,
+        head_branch: &str,
+        base_branch: &str,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: Option<&str>,
+        draft: bool,
+        _workspace: Option<&str>,
+    ) -> Result<ExecutionResult> {
+        let started_at = Utc::now();
+
+        // Opt-in gate: return a no-op success when PR creation is disabled.
+        if !self.config.pr.enabled {
+            return Ok(ExecutionResult {
+                workspace_id: Ulid::new().to_string(),
+                success: true,
+                errors: vec![],
+                diagnostics: vec![],
+                scan_artifact_path: None,
+                report_paths: std::collections::HashMap::new(),
+                watcher_result: None,
+                stage_at_completion: WorkspaceStage::Complete,
+                started_at,
+                completed_at: Utc::now(),
+                is_dry_run: false,
+            });
+        }
+
+        // Resolve GitHub PAT; pass `None` to `GithubPrClient::new` when absent.
+        let token = crate::clients::github::pr::resolve_github_pat();
+
+        let client = crate::clients::github::GithubPrClient::new(token);
+        let pr_input = crate::clients::github::PrInput {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            head_branch: head_branch.to_string(),
+            base_branch: base_branch.to_string(),
+            title: title.to_string(),
+            body: body.map(str::to_string),
+            draft,
+        };
+
+        let pr_output = client
+            .create_pr(&pr_input)
+            .await
+            .map_err(|e| PipelineError::Git(format!("PR creation failed: {e}")))?;
+
+        Ok(ExecutionResult {
+            workspace_id: Ulid::new().to_string(),
+            success: true,
+            errors: vec![],
+            diagnostics: vec![],
+            scan_artifact_path: None,
+            report_paths: std::collections::HashMap::new(),
+            watcher_result: None,
+            stage_at_completion: WorkspaceStage::PrComplete {
+                branch: head_branch.to_string(),
+                pr_number: pr_output.number,
+                pr_url: pr_output.html_url,
+            },
+            started_at,
+            completed_at: Utc::now(),
             is_dry_run: false,
         })
     }
@@ -2232,6 +2390,46 @@ mod tests {
         assert!(
             !result.errors.is_empty(),
             "errors must contain the missing plugin message"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ExecutionInput::CreatePr — opt-in gate
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_create_pr_without_opt_in_returns_success_with_no_pr_activity() {
+        let ws_dir = TempDir::new().unwrap();
+        // Config::default() has pr.enabled = false.
+        let executor = make_executor_with_success_plugin(ws_dir.path().to_str().unwrap());
+
+        let input = ExecutionInput::CreatePr {
+            repository: ".".to_string(),
+            head_branch: "feature/test".to_string(),
+            base_branch: "main".to_string(),
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+            title: "Test PR".to_string(),
+            body: None,
+            draft: false,
+            workspace: None,
+        };
+
+        let result = executor.execute(input).await;
+        assert!(result.is_ok(), "no-op should not fail: {:?}", result.err());
+        let exec_result = result.unwrap();
+        assert!(exec_result.success, "no-op result should be successful");
+        assert!(
+            exec_result.errors.is_empty(),
+            "no-op should produce no errors"
+        );
+        // Verify the stage does NOT reflect PR activity.
+        assert!(
+            !matches!(
+                exec_result.stage_at_completion,
+                WorkspaceStage::PrComplete { .. }
+            ),
+            "stage should not be PrComplete when opt-in is false"
         );
     }
 }
