@@ -257,6 +257,21 @@ pub fn score_severity(severity: &[OsvSeverityEntry]) -> OsvScore {
 ///
 /// `Some(ScoringSignal::Negative { label, weight })` when a band is present,
 /// or `None` when `primary_score` is `0.0`.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::clients::vuln::{CvssBand, OsvScore, osv_score_to_signal};
+///
+/// let score = OsvScore {
+///     cvss_v3_score: Some(7.5),
+///     cvss_v4_score: None,
+///     primary_score: 7.5,
+///     band: Some(CvssBand::High),
+/// };
+/// let signal = osv_score_to_signal(&score);
+/// assert!(signal.is_some());
+/// ```
 pub fn osv_score_to_signal(score: &OsvScore) -> Option<ScoringSignal> {
     let band = score.band.as_ref()?;
     let (label, weight): (&str, f64) = match band {

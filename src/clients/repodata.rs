@@ -233,6 +233,93 @@ pub(crate) async fn fetch_repodata_from(
     Ok(metadata)
 }
 
+/// Resolves GitHub repository metadata via a two-level fallback chain against a configurable base URL.
+///
+/// This is the internal implementation backing [`resolve_repodata`]. It checks
+/// the local workspace file first and falls through to a remote GitHub API
+/// fetch against `base_url` when the file is absent. Supplying a custom
+/// `base_url` allows test code to point the resolver at a mock server without
+/// any network requests to the production GitHub API.
+///
+/// # Arguments
+///
+/// * `repo` - A GitHub repository identifier accepted by
+///   [`crate::clients::parse_github_slug`] (e.g., `"ossf/scorecard"`).
+/// * `workspace_root` - Path to a local directory that may contain a
+///   pre-fetched `repodata.json` file.
+/// * `base_url` - Base URL of the GitHub API server, without a trailing
+///   slash (e.g., `"https://api.github.com"`).
+///
+/// # Returns
+///
+/// A [`RepoMetadata`] from whichever source succeeds first.
+///
+/// # Errors
+///
+/// - [`RepoDataResolveError::LocalFile`] when a local file exists but cannot
+///   be read.
+/// - [`RepoDataResolveError::Parse`] when a local file exists but cannot be
+///   parsed as [`RepoMetadata`].
+/// - [`RepoDataResolveError::InvalidRepo`] when `repo` cannot be parsed as a
+///   GitHub reference and no local file is found.
+/// - [`RepoDataResolveError::AllSourcesExhausted`] when no remote source
+///   succeeds.
+///
+/// # Examples
+///
+/// ```ignore
+/// // resolve_repodata_from is pub(crate); use resolve_repodata from external code.
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use xzardgz::clients::repodata::resolve_repodata_from;
+///
+/// let meta = resolve_repodata_from(
+///     "ossf/scorecard",
+///     "/tmp/workspace",
+///     "https://api.github.com",
+/// ).await?;
+/// println!("full_name: {}", meta.full_name);
+/// # Ok(())
+/// # }
+/// ```
+pub(crate) async fn resolve_repodata_from(
+    repo: &str,
+    workspace_root: &str,
+    base_url: &str,
+) -> Result<RepoMetadata, RepoDataResolveError> {
+    let local_path = Path::new(workspace_root).join("repodata.json");
+
+    if local_path.exists() {
+        let contents =
+            std::fs::read_to_string(&local_path).map_err(|e| RepoDataResolveError::LocalFile {
+                path: local_path.display().to_string(),
+                message: e.to_string(),
+            })?;
+        let metadata: RepoMetadata = serde_json::from_str(&contents)
+            .map_err(|e| RepoDataResolveError::Parse(e.to_string()))?;
+        return Ok(metadata);
+    }
+
+    let (owner, repo_name) = crate::clients::parse_github_slug(repo)
+        .ok_or_else(|| RepoDataResolveError::InvalidRepo(repo.to_string()))?;
+
+    let token: Option<String> = EnvVarStore::new("GITHUB_")
+        .get_secret("token")
+        .ok()
+        .flatten();
+
+    match fetch_repodata_from(&owner, &repo_name, token.as_deref(), base_url).await {
+        Ok(metadata) => Ok(metadata),
+        Err(e) => {
+            tracing::debug!(
+                repo = repo,
+                error = %e,
+                "remote repodata fetch failed; all sources exhausted"
+            );
+            Err(RepoDataResolveError::AllSourcesExhausted(repo.to_string()))
+        }
+    }
+}
+
 /// Resolves GitHub repository metadata via a two-level fallback chain.
 ///
 /// 1. **Local file**: reads `{workspace_root}/repodata.json` if it exists,
@@ -244,7 +331,8 @@ pub(crate) async fn fetch_repodata_from(
 ///
 /// Returns [`RepoDataResolveError::AllSourcesExhausted`] when the local file
 /// is absent and the remote fetch fails. Local file read or parse failures
-/// are returned as-is without falling through to the remote.
+/// are returned as-is without falling through to the remote. Delegates to
+/// [`resolve_repodata_from`] using [`GITHUB_API_BASE`].
 ///
 /// # Arguments
 ///
@@ -283,38 +371,7 @@ pub async fn resolve_repodata(
     repo: &str,
     workspace_root: &str,
 ) -> Result<RepoMetadata, RepoDataResolveError> {
-    let local_path = Path::new(workspace_root).join("repodata.json");
-
-    if local_path.exists() {
-        let contents =
-            std::fs::read_to_string(&local_path).map_err(|e| RepoDataResolveError::LocalFile {
-                path: local_path.display().to_string(),
-                message: e.to_string(),
-            })?;
-        let metadata: RepoMetadata = serde_json::from_str(&contents)
-            .map_err(|e| RepoDataResolveError::Parse(e.to_string()))?;
-        return Ok(metadata);
-    }
-
-    let (owner, repo_name) = crate::clients::parse_github_slug(repo)
-        .ok_or_else(|| RepoDataResolveError::InvalidRepo(repo.to_string()))?;
-
-    let token: Option<String> = EnvVarStore::new("GITHUB_")
-        .get_secret("token")
-        .ok()
-        .flatten();
-
-    match fetch_repodata_from(&owner, &repo_name, token.as_deref(), GITHUB_API_BASE).await {
-        Ok(metadata) => Ok(metadata),
-        Err(e) => {
-            tracing::debug!(
-                repo = repo,
-                error = %e,
-                "remote repodata fetch failed; all sources exhausted"
-            );
-            Err(RepoDataResolveError::AllSourcesExhausted(repo.to_string()))
-        }
-    }
+    resolve_repodata_from(repo, workspace_root, GITHUB_API_BASE).await
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +527,53 @@ mod tests {
             matches!(result, Err(RepoDataResolveError::InvalidRepo(_))),
             "expected InvalidRepo error, got: {:?}",
             result
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_repodata: remote fallback exercised via resolve_repodata_from
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_repodata_with_no_local_file_falls_back_to_remote() {
+        // Create an empty tempdir so there is no repodata.json present,
+        // which forces resolve_repodata_from to take the remote fetch path.
+        let dir = tempfile::tempdir()
+            // SAFETY: tempdir creation in test environment; failure is unrecoverable.
+            .expect("tempdir creation failed");
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/ossf/scorecard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture_repodata_json()))
+            .mount(&mock_server)
+            .await;
+
+        let workspace = dir
+            .path()
+            .to_str()
+            // SAFETY: tempdir paths from the tempfile crate are always valid UTF-8.
+            .expect("tempdir path is not valid UTF-8");
+
+        // Call the crate-internal _from variant so we can inject the mock URL.
+        // resolve_repodata delegates to this with GITHUB_API_BASE; the logic
+        // under test (tempdir miss -> slug parse -> remote fetch -> parse) is identical.
+        let result = resolve_repodata_from("ossf/scorecard", workspace, &mock_server.uri()).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        let meta = result.unwrap();
+        assert_eq!(
+            meta.full_name, "ossf/scorecard",
+            "full_name should match fixture"
+        );
+        assert_eq!(
+            meta.stargazers_count, 4500,
+            "star count should match fixture"
+        );
+        assert_eq!(
+            meta.language,
+            Some("Go".to_string()),
+            "language should match fixture"
         );
     }
 

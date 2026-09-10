@@ -241,17 +241,94 @@ pub async fn fetch_scorecard(repo: &str) -> Result<ScorecardResult, ScorecardRes
     fetch_scorecard_from(repo, SCORECARD_API_BASE).await
 }
 
+/// Resolves scorecard data via a two-level fallback chain against a configurable base URL.
+///
+/// This is the internal implementation backing [`resolve_scorecard`]. It checks
+/// the local workspace file first and falls through to a remote fetch against
+/// `base_url` when the file is absent. Supplying a custom `base_url` allows
+/// test code to point the resolver at a mock server without any network
+/// requests to the production Scorecard API.
+///
+/// # Arguments
+///
+/// * `repo` - A GitHub repository identifier accepted by
+///   [`crate::clients::parse_github_slug`].
+/// * `workspace_root` - Path to a local directory that may contain a
+///   pre-fetched `scorecard.json` file.
+/// * `base_url` - Base URL of the Scorecard API server, without a trailing
+///   slash (e.g., `"https://api.securityscorecards.dev"`).
+///
+/// # Returns
+///
+/// A [`ScorecardResult`] from whichever source succeeds first.
+///
+/// # Errors
+///
+/// - [`ScorecardResolveError::LocalFile`] when a local file exists but cannot
+///   be read.
+/// - [`ScorecardResolveError::Parse`] when a local file exists but cannot be
+///   parsed as [`ScorecardResult`].
+/// - [`ScorecardResolveError::AllSourcesExhausted`] when the local file is
+///   absent and the remote fetch fails for any reason.
+///
+/// # Examples
+///
+/// ```ignore
+/// // resolve_scorecard_from is pub(crate); use resolve_scorecard from external code.
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use xzardgz::clients::scorecard::resolve_scorecard_from;
+///
+/// let result = resolve_scorecard_from(
+///     "ossf/scorecard",
+///     "/tmp/workspace",
+///     "https://api.securityscorecards.dev",
+/// ).await?;
+/// println!("score: {}", result.score);
+/// # Ok(())
+/// # }
+/// ```
+pub(crate) async fn resolve_scorecard_from(
+    repo: &str,
+    workspace_root: &str,
+    base_url: &str,
+) -> Result<ScorecardResult, ScorecardResolveError> {
+    let local_path = Path::new(workspace_root).join("scorecard.json");
+
+    if local_path.exists() {
+        let contents =
+            std::fs::read_to_string(&local_path).map_err(|e| ScorecardResolveError::LocalFile {
+                path: local_path.display().to_string(),
+                message: e.to_string(),
+            })?;
+        let result: ScorecardResult = serde_json::from_str(&contents)
+            .map_err(|e| ScorecardResolveError::Parse(e.to_string()))?;
+        return Ok(result);
+    }
+
+    match fetch_scorecard_from(repo, base_url).await {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            tracing::debug!(
+                repo = repo,
+                error = %e,
+                "remote scorecard fetch failed; all sources exhausted"
+            );
+            Err(ScorecardResolveError::AllSourcesExhausted(repo.to_string()))
+        }
+    }
+}
+
 /// Resolves scorecard data via a two-level fallback chain.
 ///
 /// 1. **Local file**: reads `{workspace_root}/scorecard.json` if it exists,
 ///    parses it as JSON, and returns the result immediately without any
 ///    network request.
-/// 2. **Remote fetch**: calls the public OpenSSF Scorecard REST API via
-///    [`fetch_scorecard`].
+/// 2. **Remote fetch**: calls the public OpenSSF Scorecard REST API.
 ///
 /// Returns [`ScorecardResolveError::AllSourcesExhausted`] when both sources
 /// fail. Local file read or parse failures are returned as-is (without
-/// falling through to the remote).
+/// falling through to the remote). Delegates to [`resolve_scorecard_from`]
+/// using [`SCORECARD_API_BASE`].
 ///
 /// # Arguments
 ///
@@ -288,30 +365,7 @@ pub async fn resolve_scorecard(
     repo: &str,
     workspace_root: &str,
 ) -> Result<ScorecardResult, ScorecardResolveError> {
-    let local_path = Path::new(workspace_root).join("scorecard.json");
-
-    if local_path.exists() {
-        let contents =
-            std::fs::read_to_string(&local_path).map_err(|e| ScorecardResolveError::LocalFile {
-                path: local_path.display().to_string(),
-                message: e.to_string(),
-            })?;
-        let result: ScorecardResult = serde_json::from_str(&contents)
-            .map_err(|e| ScorecardResolveError::Parse(e.to_string()))?;
-        return Ok(result);
-    }
-
-    match fetch_scorecard(repo).await {
-        Ok(result) => Ok(result),
-        Err(e) => {
-            tracing::debug!(
-                repo = repo,
-                error = %e,
-                "remote scorecard fetch failed; all sources exhausted"
-            );
-            Err(ScorecardResolveError::AllSourcesExhausted(repo.to_string()))
-        }
-    }
+    resolve_scorecard_from(repo, workspace_root, SCORECARD_API_BASE).await
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +513,46 @@ mod tests {
         // remote path which will reject the invalid repo identifier.
         let result = resolve_scorecard("not-a-repo://bad", workspace).await;
         assert!(result.is_err(), "expected Err for invalid repo identifier");
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_scorecard: remote fallback exercised via resolve_scorecard_from
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resolve_scorecard_with_no_local_file_falls_back_to_remote() {
+        // Create an empty tempdir so there is no scorecard.json present,
+        // which forces resolve_scorecard_from to take the remote fetch path.
+        let dir = tempfile::tempdir()
+            // SAFETY: tempdir creation in test environment; failure is unrecoverable.
+            .expect("tempdir creation failed");
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/github.com/ossf/scorecard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture_scorecard_json()))
+            .mount(&mock_server)
+            .await;
+
+        let workspace = dir
+            .path()
+            .to_str()
+            // SAFETY: tempdir paths from the tempfile crate are always valid UTF-8.
+            .expect("tempdir path is not valid UTF-8");
+
+        // Call the crate-internal _from variant so we can inject the mock URL.
+        // resolve_scorecard delegates to this with SCORECARD_API_BASE; the logic
+        // under test (tempdir miss -> remote fetch -> parse) is identical.
+        let result = resolve_scorecard_from("ossf/scorecard", workspace, &mock_server.uri()).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        let sc = result.unwrap();
+        assert_eq!(sc.score, 7.5, "score should match fixture");
+        assert_eq!(
+            sc.repo.name, "github.com/ossf/scorecard",
+            "repo name should match fixture"
+        );
+        assert_eq!(sc.checks.len(), 1, "one check expected from fixture");
     }
 
     // ------------------------------------------------------------------

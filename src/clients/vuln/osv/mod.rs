@@ -81,6 +81,14 @@ impl OsvClient {
     /// # Returns
     ///
     /// A new [`OsvClient`] that directs all requests to `base_url`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xzardgz::clients::vuln::OsvClient;
+    ///
+    /// let client = OsvClient::with_base_url("http://127.0.0.1:8080".to_string());
+    /// ```
     pub fn with_base_url(base_url: String) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -382,5 +390,71 @@ mod tests {
             "expected VulnClientError::Http, got: {:?}",
             result
         );
+    }
+
+    // ------------------------------------------------------------------
+    // test_osv_client_query_with_commit_falls_back_to_commit_query
+    // ------------------------------------------------------------------
+
+    /// Validates that when both PURL and name+ecosystem are absent, the
+    /// commit-hash fallback fires and returns non-empty results.
+    #[tokio::test]
+    async fn test_osv_client_query_with_commit_falls_back_to_commit_query() {
+        let mock_server = MockServer::start().await;
+        // SAFETY: test fixture must be present for this test to be meaningful
+        let fixture = std::fs::read_to_string("testdata/osv.dev.results.json")
+            .expect("testdata/osv.dev.results.json must exist");
+
+        Mock::given(method("POST"))
+            .and(path("/v1/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = OsvClient::with_base_url(mock_server.uri());
+        let query = VulnerabilityQuery {
+            name: String::new(),
+            version: None,
+            ecosystem: None,
+            purl: None,
+            commit: Some("abc123deadbeef".to_string()),
+        };
+
+        let result = client.query(&query).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        assert!(
+            !result.unwrap().is_empty(),
+            "expected non-empty vulnerability records from commit query"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // test_osv_client_query_with_commit_empty_returns_ok_empty
+    // ------------------------------------------------------------------
+
+    /// Validates that when both PURL and name+ecosystem are absent, and the
+    /// commit query returns no results, the method returns `Ok(vec![])`.
+    #[tokio::test]
+    async fn test_osv_client_query_with_commit_empty_returns_ok_empty() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"vulns": []}"#))
+            .mount(&mock_server)
+            .await;
+
+        let client = OsvClient::with_base_url(mock_server.uri());
+        let query = VulnerabilityQuery {
+            name: String::new(),
+            version: None,
+            ecosystem: None,
+            purl: None,
+            commit: Some("abc123deadbeef".to_string()),
+        };
+
+        let result = client.query(&query).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        assert!(result.unwrap().is_empty(), "expected empty result vec");
     }
 }

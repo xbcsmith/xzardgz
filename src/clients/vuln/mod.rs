@@ -22,7 +22,7 @@ use thiserror::Error;
 pub mod osv;
 
 pub use osv::OsvClient;
-pub use osv::scoring::{CvssBand, OsvScore, score_severity};
+pub use osv::scoring::{CvssBand, OsvScore, osv_score_to_signal, score_severity};
 
 // ---------------------------------------------------------------------------
 // VulnerabilityQuery
@@ -71,6 +71,24 @@ pub struct VulnerabilityQuery {
 /// Fields mirror the [OSV schema](https://osv.dev/docs/).  Unknown JSON
 /// fields are silently ignored during deserialization so that new schema
 /// versions do not break existing code.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::clients::vuln::VulnerabilityRecord;
+///
+/// let record = VulnerabilityRecord {
+///     id: "GHSA-462w-v97r-4m45".to_string(),
+///     summary: Some("Cross-site scripting in Jinja2".to_string()),
+///     details: None,
+///     aliases: vec![],
+///     references: vec![],
+///     severity: vec![],
+///     affected: vec![],
+///     database_specific: None,
+/// };
+/// assert_eq!(record.id, "GHSA-462w-v97r-4m45");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VulnerabilityRecord {
     /// OSV or advisory database identifier (e.g. `GHSA-462w-v97r-4m45`).
@@ -148,6 +166,18 @@ pub struct OsvPackage {
 // ---------------------------------------------------------------------------
 
 /// Errors that can occur when querying a vulnerability source.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::clients::vuln::VulnClientError;
+///
+/// let err = VulnClientError::Http {
+///     url: "https://api.osv.dev/v1/query".to_string(),
+///     message: "connection refused".to_string(),
+/// };
+/// assert!(err.to_string().contains("connection refused"));
+/// ```
 #[derive(Debug, Error)]
 pub enum VulnClientError {
     /// HTTP-level error (network failure or non-success HTTP status code).
@@ -178,6 +208,23 @@ pub enum VulnClientError {
 /// # Errors
 ///
 /// Returns [`VulnClientError`] on network failure or deserialization errors.
+///
+/// # Examples
+///
+/// ```no_run
+/// use xzardgz::clients::vuln::{VulnerabilityQuery, VulnerabilitySource};
+///
+/// async fn check(source: &dyn VulnerabilitySource) {
+///     let query = VulnerabilityQuery {
+///         name: "jinja2".to_string(),
+///         version: Some("2.9.6".to_string()),
+///         ecosystem: Some("PyPI".to_string()),
+///         purl: None,
+///         commit: None,
+///     };
+///     let _ = source.query(&query).await;
+/// }
+/// ```
 #[async_trait]
 pub trait VulnerabilitySource: Send + Sync {
     /// Queries the vulnerability source for records matching the given dependency.
