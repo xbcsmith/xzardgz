@@ -49,6 +49,7 @@ use crate::workspace::id::{hash_repository, new_workspace_id, now_utc};
 ///     "https://github.com/example/repo",
 ///     Some("main".to_string()),
 ///     None,
+///     None,
 /// ).unwrap();
 ///
 /// println!("workspace id: {}", manager.id());
@@ -78,6 +79,8 @@ impl WorkspaceManager {
     /// * `repository_url` - Repository URL or local path for this run.
     /// * `target_branch` - Optional branch requested by the caller.
     /// * `watcher_task_id` - Optional watcher task ID if triggered by a watcher.
+    /// * `correlation_id` - Optional tracing identifier for this run. A fresh
+    ///   ULID is generated when `None`.
     ///
     /// # Errors
     ///
@@ -88,9 +91,11 @@ impl WorkspaceManager {
         repository_url: &str,
         target_branch: Option<String>,
         watcher_task_id: Option<String>,
+        correlation_id: Option<String>,
     ) -> Result<Self> {
         let workspace_id = new_workspace_id();
         let repository_hash = hash_repository(repository_url);
+        let correlation_id = correlation_id.unwrap_or_else(|| ulid::Ulid::new().to_string());
 
         let state = WorkspaceState::new(
             workspace_id.clone(),
@@ -98,6 +103,7 @@ impl WorkspaceManager {
             repository_hash,
             target_branch,
             watcher_task_id,
+            correlation_id,
         );
 
         let paths = WorkspacePaths::new(workspace_root, &workspace_id);
@@ -146,11 +152,18 @@ impl WorkspaceManager {
     /// workspace with the lexicographically greatest ULID (i.e. the most
     /// recently created) is returned.
     ///
+    /// When no existing workspace matches and a fresh workspace must be
+    /// created, `correlation_id` is passed to [`Self::create`]. When an
+    /// existing workspace is found, `correlation_id` is ignored — the
+    /// persisted value from the state file is used.
+    ///
     /// # Arguments
     ///
     /// * `workspace_root` - Parent directory to scan for existing workspaces.
     /// * `repository_url` - Repository URL or path to match.
     /// * `target_branch` - Branch to use when a new workspace must be created.
+    /// * `correlation_id` - Tracing identifier forwarded to [`Self::create`]
+    ///   when no existing workspace is found.
     ///
     /// # Errors
     ///
@@ -160,6 +173,7 @@ impl WorkspaceManager {
         workspace_root: &str,
         repository_url: &str,
         target_branch: Option<String>,
+        correlation_id: Option<String>,
     ) -> Result<Self> {
         let repo_hash = hash_repository(repository_url);
 
@@ -167,7 +181,13 @@ impl WorkspaceManager {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Workspace root does not exist yet; create a fresh workspace.
-                return Self::create(workspace_root, repository_url, target_branch, None);
+                return Self::create(
+                    workspace_root,
+                    repository_url,
+                    target_branch,
+                    None,
+                    correlation_id.clone(),
+                );
             }
             Err(e) => {
                 return Err(PipelineError::Workspace(format!(
@@ -198,7 +218,13 @@ impl WorkspaceManager {
         }
 
         if matches.is_empty() {
-            return Self::create(workspace_root, repository_url, target_branch, None);
+            return Self::create(
+                workspace_root,
+                repository_url,
+                target_branch,
+                None,
+                correlation_id,
+            );
         }
 
         // Sort descending by workspace_id (ULID is lexicographically chronological).
@@ -448,6 +474,7 @@ impl WorkspaceManager {
     ///     "https://github.com/example/repo",
     ///     Some("main".to_string()),
     ///     None,
+    ///     None,
     /// ).unwrap();
     ///
     /// let meta = GitMetadata::new(
@@ -497,8 +524,9 @@ mod tests {
     #[test]
     fn test_create_creates_workspace_directory() {
         let dir = temp_dir();
-        let manager = WorkspaceManager::create(root(&dir), "https://example.com/repo", None, None)
-            .expect("SAFETY: create should succeed on a writable temp dir");
+        let manager =
+            WorkspaceManager::create(root(&dir), "https://example.com/repo", None, None, None)
+                .expect("SAFETY: create should succeed on a writable temp dir");
 
         let workspace_dir = dir.path().join(manager.id());
         assert!(
@@ -511,8 +539,9 @@ mod tests {
     #[test]
     fn test_create_saves_initial_state_file() {
         let dir = temp_dir();
-        let manager = WorkspaceManager::create(root(&dir), "https://example.com/state", None, None)
-            .expect("SAFETY: create should succeed on a writable temp dir");
+        let manager =
+            WorkspaceManager::create(root(&dir), "https://example.com/state", None, None, None)
+                .expect("SAFETY: create should succeed on a writable temp dir");
 
         let state_file = manager.paths.state_file();
         assert!(
@@ -536,8 +565,9 @@ mod tests {
     #[test]
     fn test_load_reads_saved_state() {
         let dir = temp_dir();
-        let manager = WorkspaceManager::create(root(&dir), "https://example.com/load", None, None)
-            .expect("SAFETY: create should succeed");
+        let manager =
+            WorkspaceManager::create(root(&dir), "https://example.com/load", None, None, None)
+                .expect("SAFETY: create should succeed");
 
         let workspace_id = manager.id().to_string();
         let loaded = WorkspaceManager::load(root(&dir), &workspace_id)
@@ -550,9 +580,14 @@ mod tests {
     #[test]
     fn test_save_and_load_roundtrip() {
         let dir = temp_dir();
-        let manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/roundtrip", None, None)
-                .expect("SAFETY: create should succeed");
+        let manager = WorkspaceManager::create(
+            root(&dir),
+            "https://example.com/roundtrip",
+            None,
+            None,
+            None,
+        )
+        .expect("SAFETY: create should succeed");
 
         let workspace_id = manager.id().to_string();
         let loaded = WorkspaceManager::load(root(&dir), &workspace_id)
@@ -568,7 +603,7 @@ mod tests {
     fn test_transition_updates_current_stage() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/stage", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/stage", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         manager
@@ -586,7 +621,7 @@ mod tests {
     fn test_transition_records_timestamp() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/ts", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/ts", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         let stage = WorkspaceStage::Scanning;
@@ -607,7 +642,7 @@ mod tests {
     fn test_transition_is_idempotent() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/idem", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/idem", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         let r1 = manager.transition(WorkspaceStage::Scanning);
@@ -633,7 +668,7 @@ mod tests {
     fn test_record_scan_artifact_sets_path_and_stage() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/scan", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/scan", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         manager
@@ -674,7 +709,7 @@ mod tests {
     fn test_record_plugin_output_stores_record() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/plugin", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/plugin", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         let diagnostics = vec!["msg1".to_string(), "msg2".to_string()];
@@ -712,7 +747,7 @@ mod tests {
     fn test_record_plugin_output_replaces_on_rerun() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/replace", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/replace", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         manager
@@ -750,7 +785,7 @@ mod tests {
     fn test_add_report_path_appends_to_step_list() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/report", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/report", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         manager
@@ -774,7 +809,7 @@ mod tests {
     fn test_mark_published_sets_flag() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/pub", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/pub", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         assert!(
@@ -796,7 +831,7 @@ mod tests {
     fn test_mark_published_is_idempotent() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/pub2", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/pub2", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         let r1 = manager.mark_published();
@@ -814,8 +849,12 @@ mod tests {
     #[test]
     fn test_open_creates_workspace_when_none_exists() {
         let dir = temp_dir();
-        let result =
-            WorkspaceManager::open(root(&dir), "https://github.com/example/new-open", None);
+        let result = WorkspaceManager::open(
+            root(&dir),
+            "https://github.com/example/new-open",
+            None,
+            None,
+        );
 
         assert!(
             result.is_ok(),
@@ -832,12 +871,12 @@ mod tests {
         let dir = temp_dir();
         let repo_url = "https://github.com/example/open-resume-test";
 
-        let created = WorkspaceManager::create(root(&dir), repo_url, None, None)
+        let created = WorkspaceManager::create(root(&dir), repo_url, None, None, None)
             .expect("SAFETY: create should succeed");
         let original_id = created.id().to_string();
         drop(created);
 
-        let opened = WorkspaceManager::open(root(&dir), repo_url, None)
+        let opened = WorkspaceManager::open(root(&dir), repo_url, None, None)
             .expect("SAFETY: open should succeed for an existing workspace");
 
         assert_eq!(
@@ -851,7 +890,7 @@ mod tests {
     fn test_is_failed_returns_true_when_stage_is_failed() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/failed", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/failed", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         assert!(
@@ -876,7 +915,7 @@ mod tests {
     fn test_is_complete_returns_true_when_stage_is_complete() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/complete", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/complete", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         assert!(
@@ -902,7 +941,7 @@ mod tests {
     fn test_apply_git_metadata_persists_branch_to_state_file() {
         let dir = temp_dir();
         let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/repo", None, None)
+            WorkspaceManager::create(root(&dir), "https://example.com/repo", None, None, None)
                 .expect("SAFETY: create should succeed");
 
         let meta = crate::git::metadata::GitMetadata::new(
@@ -948,6 +987,7 @@ mod tests {
             "https://example.com/local-path-test",
             None,
             None,
+            None,
         )
         .expect("SAFETY: create should succeed");
 
@@ -978,9 +1018,14 @@ mod tests {
     #[test]
     fn test_record_plugin_score_persists_score_for_step() {
         let dir = temp_dir();
-        let mut manager =
-            WorkspaceManager::create(root(&dir), "https://example.com/score-test", None, None)
-                .expect("SAFETY: create should succeed on a writable temp dir");
+        let mut manager = WorkspaceManager::create(
+            root(&dir),
+            "https://example.com/score-test",
+            None,
+            None,
+            None,
+        )
+        .expect("SAFETY: create should succeed on a writable temp dir");
 
         manager
             .record_plugin_score("step-1", 0.85)
@@ -996,6 +1041,7 @@ mod tests {
         let mut manager = WorkspaceManager::create(
             root(&dir),
             "https://example.com/score-replace-test",
+            None,
             None,
             None,
         )
@@ -1018,6 +1064,7 @@ mod tests {
         let mut manager = WorkspaceManager::create(
             root(&dir),
             "https://example.com/score-reload-test",
+            None,
             None,
             None,
         )

@@ -192,6 +192,7 @@ pub fn build_direct_invocation_plan(
         reports,
         dry_run,
         resume: false,
+        correlation_id: None,
     }
 }
 

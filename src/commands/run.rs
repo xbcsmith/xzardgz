@@ -59,6 +59,7 @@ use crate::workflow::validator::{
 ///     max_findings: None,
 ///     report_format: vec![],
 ///     resume: false,
+///     correlation_id: None,
 /// };
 /// // Call from an async context: let result = execute(args).await;
 /// ```
@@ -138,6 +139,7 @@ pub async fn execute(args: RunArgs) -> Result<()> {
 ///     max_findings: None,
 ///     report_format: vec![],
 ///     resume: false,
+///     correlation_id: None,
 /// };
 /// execute_with(args, Config::default(), PluginRegistry::with_builtins()).await?;
 /// # Ok(())
@@ -174,6 +176,8 @@ pub async fn execute_with(
 
         let mut plan = parse_plan(&content, extension)?;
         validate_plan(&plan)?;
+        // Apply caller-supplied correlation_id before creating the workspace.
+        plan.correlation_id = args.correlation_id.clone();
         apply_run_overrides(
             &mut plan,
             args.branch.clone(),
@@ -212,6 +216,7 @@ pub async fn execute_with(
                     dry_run: args.dry_run,
                     report_formats: args.report_format.clone(),
                     output_dir: args.output_dir.clone(),
+                    correlation_id: args.correlation_id.clone(),
                 })
                 .await?
         } else {
@@ -228,6 +233,8 @@ pub async fn execute_with(
                 args.report_format.clone(),
             );
             validate_plan(&plan)?;
+            // Apply caller-supplied correlation_id before creating the workspace.
+            plan.correlation_id = args.correlation_id.clone();
             // `build_direct_invocation_plan` already applied branch,
             // workspace, dry_run, max_findings, and report_format; only
             // resume and output_dir remain to be applied here.
@@ -272,6 +279,7 @@ pub async fn execute_with(
 /// * `result` - The execution result to summarize.
 pub(crate) fn print_execution_result(result: &ExecutionResult) {
     println!("Workspace: {}", result.workspace_id);
+    println!("Correlation ID: {}", result.correlation_id);
     if result.is_dry_run {
         println!("Dry run: validation only, no side effects performed.");
     }
@@ -349,6 +357,7 @@ mod tests {
             max_findings: None,
             report_format: vec![],
             resume: false,
+            correlation_id: None,
         }
     }
 

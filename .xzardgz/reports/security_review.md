@@ -1,10 +1,12 @@
 # Security Review Report
 
-Generated at: 2026-09-10T15:58:07Z
+Generated at: 2026-09-10T16:51:00Z
 
 Repository: repo
 
-Workspace: 01M260MSBM36N0M4K17F3R5R8Z
+Workspace: 01M263NMRFFKYPY753BAB8ZVWN
+
+Risk band: HIGH
 
 ## Summary
 
@@ -12,8 +14,20 @@ Primary language: Rust
 
 Frameworks: None detected
 
-Total findings: 0
+Total findings: 1
+
+Findings by severity:
+
+- HIGH: 1
 
 ## Findings by Category
 
-*No findings recorded.*
+### secrets
+
+| Severity | CWE | OWASP | File | Symbol | Evidence | Impact | Remediation |
+|----------|-----|-------|------|--------|----------|--------|-------------|
+| HIGH | CWE-798 | A07:2021 | src/main.rs:10 |  | Possible credential reference | data exposure | use env vars |
+
+## Confidence
+
+Average confidence: 0.90

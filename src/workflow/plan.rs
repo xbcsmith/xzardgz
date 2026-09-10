@@ -88,6 +88,17 @@ pub struct WorkflowPlan {
     /// fresh.
     #[serde(default)]
     pub resume: bool,
+
+    /// Optional correlation identifier for this run.
+    ///
+    /// When set, this value is used as the run's `correlation_id` rather than
+    /// generating a fresh ULID. Watcher-triggered runs populate this from the
+    /// inbound task's `correlation_id`; CLI-triggered runs may supply it via
+    /// the `--correlation-id` flag.
+    ///
+    /// `None` means the executor will generate a fresh ULID for this run.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
 }
 
 /// Plugin execution step within a [`WorkflowPlan`].
@@ -317,6 +328,7 @@ impl WorkflowPlan {
             reports: None,
             dry_run: false,
             resume: false,
+            correlation_id: None,
         }
     }
 }
@@ -353,6 +365,7 @@ mod tests {
             reports: None,
             dry_run: false,
             resume: false,
+            correlation_id: None,
         }
     }
 

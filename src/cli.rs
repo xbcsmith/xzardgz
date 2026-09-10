@@ -159,6 +159,13 @@ pub struct RunArgs {
     /// Resume execution from an existing workspace state rather than starting fresh.
     #[arg(long)]
     pub resume: bool,
+
+    /// Optional correlation identifier for this run.
+    ///
+    /// When omitted, a ULID is generated automatically for every run.
+    /// Use this to propagate a trace identifier from an upstream CI pipeline.
+    #[arg(long)]
+    pub correlation_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +205,12 @@ pub struct ScanArgs {
     /// Resume execution from an existing workspace state rather than starting fresh.
     #[arg(long)]
     pub resume: bool,
+
+    /// Optional correlation identifier for this run.
+    ///
+    /// When omitted, a ULID is generated automatically for every run.
+    #[arg(long)]
+    pub correlation_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +603,8 @@ mod tests {
             "--max-findings",
             "50",
             "--resume",
+            "--correlation-id",
+            "test-run-cid",
         ])
         .unwrap();
         match cli.command {
@@ -608,6 +623,7 @@ mod tests {
                 assert!(args.trace_transcript);
                 assert_eq!(args.max_findings, Some(50));
                 assert!(args.resume);
+                assert_eq!(args.correlation_id, Some("test-run-cid".to_string()));
             }
             _ => panic!("expected Run command"),
         }
@@ -649,6 +665,8 @@ mod tests {
             "--format",
             "json",
             "--overwrite",
+            "--correlation-id",
+            "test-scan-cid",
         ])
         .unwrap();
         match cli.command {
@@ -659,6 +677,7 @@ mod tests {
                 assert_eq!(args.output, Some("/tmp/scan.json".to_string()));
                 assert_eq!(args.format, Some("json".to_string()));
                 assert!(args.overwrite);
+                assert_eq!(args.correlation_id, Some("test-scan-cid".to_string()));
             }
             _ => panic!("expected Scan command"),
         }

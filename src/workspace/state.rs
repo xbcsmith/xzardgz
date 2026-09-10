@@ -116,6 +116,13 @@ pub struct WorkspaceState {
     /// Whether the watcher result has been successfully published.
     #[serde(default)]
     pub watcher_result_published: bool,
+    /// Correlation identifier for tracing this run end to end.
+    ///
+    /// Populated when the workspace is created. Survives `--resume` so that
+    /// all stages of a single logical run share the same identifier.
+    /// Empty string in state files written before Phase 3 was deployed.
+    #[serde(default)]
+    pub correlation_id: String,
     /// The resolved model record from the model resolver.
     ///
     /// Set after the pre-flight model resolution pass. Contains the selected
@@ -134,9 +141,9 @@ impl WorkspaceState {
     /// Creates a new `WorkspaceState` for a repository.
     ///
     /// Sets `version`, `workspace_id`, `repository_url`, `repository_hash`,
-    /// `target_branch`, `watcher_task_id`, `current_stage`
-    /// ([`WorkspaceStage::Initializing`]), `created_at`, and `updated_at`.
-    /// All other fields are left at their type defaults.
+    /// `target_branch`, `watcher_task_id`, `correlation_id`,
+    /// `current_stage` ([`WorkspaceStage::Initializing`]), `created_at`, and
+    /// `updated_at`. All other fields are left at their type defaults.
     ///
     /// # Arguments
     ///
@@ -145,6 +152,7 @@ impl WorkspaceState {
     /// * `repository_hash` - SHA-256 hex digest of `repository_url`.
     /// * `target_branch` - Optional branch name requested by the caller.
     /// * `watcher_task_id` - Optional watcher task ID for watcher-triggered runs.
+    /// * `correlation_id` - Tracing identifier for this logical run.
     ///
     /// # Examples
     ///
@@ -160,8 +168,10 @@ impl WorkspaceState {
     ///     hash,
     ///     None,
     ///     None,
+    ///     "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
     /// );
     /// assert_eq!(state.workspace_id, id);
+    /// assert_eq!(state.correlation_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     /// ```
     pub fn new(
         workspace_id: String,
@@ -169,6 +179,7 @@ impl WorkspaceState {
         repository_hash: String,
         target_branch: Option<String>,
         watcher_task_id: Option<String>,
+        correlation_id: String,
     ) -> Self {
         let now = now_utc();
         Self {
@@ -194,6 +205,7 @@ impl WorkspaceState {
             plugin_diagnostics: HashMap::new(),
             watcher_task_id,
             watcher_result_published: false,
+            correlation_id,
             resolved_model: None,
         }
     }
@@ -217,6 +229,7 @@ impl WorkspaceState {
     ///     hash_repository("https://github.com/example/repo"),
     ///     None,
     ///     None,
+    ///     String::new(),
     /// );
     /// // SAFETY: Serialization of a valid WorkspaceState cannot fail.
     /// let yaml = state.to_yaml().unwrap();
@@ -248,6 +261,7 @@ impl WorkspaceState {
     ///     hash_repository("https://github.com/example/repo"),
     ///     None,
     ///     None,
+    ///     String::new(),
     /// );
     /// // SAFETY: Serialization of a valid WorkspaceState cannot fail.
     /// let yaml = state.to_yaml().unwrap();
@@ -287,6 +301,7 @@ impl WorkspaceState {
     ///     hash_repository("https://github.com/example/repo"),
     ///     None,
     ///     None,
+    ///     String::new(),
     /// );
     ///
     /// let meta = GitMetadata::new(
@@ -331,12 +346,15 @@ mod tests {
 
     /// Builds a minimal valid `WorkspaceState` for use in tests.
     fn make_state() -> WorkspaceState {
+        let id = new_workspace_id();
+        let hash = hash_repository("https://github.com/example/repo");
         WorkspaceState::new(
-            new_workspace_id(),
+            id,
             "https://github.com/example/repo".to_string(),
-            hash_repository("https://github.com/example/repo"),
-            Some("main".to_string()),
+            hash,
             None,
+            None,
+            "test-correlation-id".to_string(),
         )
     }
 
@@ -352,6 +370,7 @@ mod tests {
             hash.clone(),
             Some("main".to_string()),
             Some("task-123".to_string()),
+            "test-correlation-id".to_string(),
         );
 
         assert_eq!(state.workspace_id, id, "workspace_id mismatch");
@@ -389,6 +408,10 @@ mod tests {
             "local_repository_path should be None"
         );
         assert!(state.branch_name.is_none(), "branch_name should be None");
+        assert_eq!(
+            state.correlation_id, "test-correlation-id",
+            "correlation_id should match the value passed to new()"
+        );
     }
 
     #[test]
@@ -794,6 +817,25 @@ mod tests {
             "fallback_reason should round-trip correctly"
         );
         assert_eq!(resolved.selected_model, "gpt-4o");
+    }
+
+    #[test]
+    fn test_workspace_state_load_from_legacy_yaml_without_correlation_id_field() {
+        // Simulates loading a pre-Phase-3 state file that has no correlation_id key.
+        // The field must default to an empty string rather than failing to parse.
+        let yaml = r#"
+version: "1"
+workspace_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+repository_url: "https://github.com/example/repo"
+repository_hash: "abc123"
+current_stage:
+  kind: initializing
+created_at: "2024-01-01T00:00:00Z"
+updated_at: "2024-01-01T00:00:00Z"
+"#;
+        // SAFETY: the YAML above is hardcoded and valid.
+        let state = WorkspaceState::load_from_str(yaml).unwrap();
+        assert_eq!(state.correlation_id, "");
     }
 
     #[test]

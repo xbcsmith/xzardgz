@@ -175,6 +175,7 @@ pub async fn run_plugin_with(
             dry_run: args.dry_run,
             report_formats: args.report_format.clone(),
             output_dir: args.output_dir.clone(),
+            correlation_id: None,
         })
         .await?;
 
@@ -326,6 +327,7 @@ mod tests {
                 branch: None,
                 resume: false,
                 workspace: Some(scan_ws_dir.path().to_str().unwrap().to_string()),
+                correlation_id: None,
             })
             .await
             .expect("scan-only run must succeed to produce a scan artifact");
@@ -370,6 +372,7 @@ mod tests {
                 branch: None,
                 resume: false,
                 workspace: Some(ws_dir.path().to_str().unwrap().to_string()),
+                correlation_id: None,
             })
             .await
             .expect("initial scan-only run must succeed to produce a workspace");
@@ -418,6 +421,7 @@ mod tests {
                 branch: None,
                 resume: false,
                 workspace: Some(scan_ws_dir.path().to_str().unwrap().to_string()),
+                correlation_id: None,
             })
             .await
             .expect("scan-only run must succeed to produce a scan artifact");

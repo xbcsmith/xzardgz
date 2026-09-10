@@ -42,8 +42,9 @@ fn test_workspace_create_produces_valid_state_file() {
     let dir = temp_dir();
     let repo_url = "https://github.com/example/valid-state";
 
-    let manager = WorkspaceManager::create(root(&dir), repo_url, Some("main".to_string()), None)
-        .expect("SAFETY: create should succeed on a writable temp dir");
+    let manager =
+        WorkspaceManager::create(root(&dir), repo_url, Some("main".to_string()), None, None)
+            .expect("SAFETY: create should succeed on a writable temp dir");
 
     let state_file = manager.paths.state_file();
     assert!(
@@ -88,7 +89,7 @@ fn test_workspace_load_by_id_returns_correct_state() {
     let dir = temp_dir();
     let repo_url = "https://github.com/example/load-by-id";
 
-    let created = WorkspaceManager::create(root(&dir), repo_url, None, None)
+    let created = WorkspaceManager::create(root(&dir), repo_url, None, None, None)
         .expect("SAFETY: create should succeed");
 
     let workspace_id = created.id().to_string();
@@ -121,7 +122,7 @@ fn test_workspace_open_creates_new_when_no_match() {
     let dir = temp_dir();
     let repo_url = "https://github.com/example/brand-new-open";
 
-    let result = WorkspaceManager::open(root(&dir), repo_url, None);
+    let result = WorkspaceManager::open(root(&dir), repo_url, None, None);
 
     assert!(
         result.is_ok(),
@@ -145,13 +146,13 @@ fn test_workspace_open_resumes_most_recent_matching_workspace() {
     let dir = temp_dir();
     let repo_url = "https://github.com/example/resume-me";
 
-    let created = WorkspaceManager::create(root(&dir), repo_url, None, None)
+    let created = WorkspaceManager::create(root(&dir), repo_url, None, None, None)
         .expect("SAFETY: create should succeed");
     let original_id = created.id().to_string();
     drop(created);
 
-    let opened =
-        WorkspaceManager::open(root(&dir), repo_url, None).expect("SAFETY: open should succeed");
+    let opened = WorkspaceManager::open(root(&dir), repo_url, None, None)
+        .expect("SAFETY: open should succeed");
 
     assert_eq!(
         opened.id(),
@@ -169,7 +170,7 @@ fn test_workspace_open_resumes_most_recent_matching_workspace() {
 fn test_workspace_transition_to_scanning() {
     let dir = temp_dir();
     let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/scanning", None, None)
+        WorkspaceManager::create(root(&dir), "https://example.com/scanning", None, None, None)
             .expect("SAFETY: create should succeed");
 
     manager
@@ -201,9 +202,14 @@ fn test_workspace_transition_to_scanning() {
 #[test]
 fn test_workspace_transition_to_failed_preserves_plugin_outputs() {
     let dir = temp_dir();
-    let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/fail-preserve", None, None)
-            .expect("SAFETY: create should succeed");
+    let mut manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/fail-preserve",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     let id = manager.id().to_string();
 
@@ -235,9 +241,14 @@ fn test_workspace_transition_to_failed_preserves_plugin_outputs() {
 #[test]
 fn test_workspace_record_scan_artifact_sets_scan_complete_stage() {
     let dir = temp_dir();
-    let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/scan-complete", None, None)
-            .expect("SAFETY: create should succeed");
+    let mut manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/scan-complete",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     let artifact_path = "/ws/scan/artifact.yaml".to_string();
 
@@ -274,9 +285,14 @@ fn test_workspace_record_scan_artifact_sets_scan_complete_stage() {
 #[test]
 fn test_workspace_record_plugin_output_can_be_replaced() {
     let dir = temp_dir();
-    let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/replace-output", None, None)
-            .expect("SAFETY: create should succeed");
+    let mut manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/replace-output",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     manager
         .record_plugin_output("step1", "plugin-x", None, false, vec!["warn1".to_string()])
@@ -314,9 +330,14 @@ fn test_workspace_record_plugin_output_can_be_replaced() {
 #[test]
 fn test_workspace_add_report_path_accumulates() {
     let dir = temp_dir();
-    let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/accumulate", None, None)
-            .expect("SAFETY: create should succeed");
+    let mut manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/accumulate",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     for i in 1..=3 {
         manager
@@ -350,7 +371,7 @@ fn test_workspace_add_report_path_accumulates() {
 fn test_workspace_mark_published_is_idempotent() {
     let dir = temp_dir();
     let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/pub-idem", None, None)
+        WorkspaceManager::create(root(&dir), "https://example.com/pub-idem", None, None, None)
             .expect("SAFETY: create should succeed");
 
     let r1 = manager.mark_published();
@@ -374,9 +395,14 @@ fn test_workspace_mark_published_is_idempotent() {
 #[test]
 fn test_workspace_state_serializes_rfc3339_timestamps() {
     let dir = temp_dir();
-    let manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/timestamps", None, None)
-            .expect("SAFETY: create should succeed");
+    let manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/timestamps",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     // SAFETY: serialization of a valid WorkspaceState cannot fail.
     let yaml = manager
@@ -411,9 +437,14 @@ fn test_workspace_state_serializes_rfc3339_timestamps() {
 #[test]
 fn test_workspace_failed_stage_preserves_diagnostics() {
     let dir = temp_dir();
-    let mut manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/diag-survive", None, None)
-            .expect("SAFETY: create should succeed");
+    let mut manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/diag-survive",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     let id = manager.id().to_string();
 
@@ -476,7 +507,7 @@ fn test_workspace_repository_hash_is_stable_across_create_and_reload() {
     let dir = temp_dir();
     let repo_url = "https://github.com/example/stable-hash";
 
-    let manager = WorkspaceManager::create(root(&dir), repo_url, None, None)
+    let manager = WorkspaceManager::create(root(&dir), repo_url, None, None, None)
         .expect("SAFETY: create should succeed");
 
     let expected_hash = hash_repository(repo_url);
@@ -503,9 +534,14 @@ fn test_workspace_repository_hash_is_stable_across_create_and_reload() {
 #[test]
 fn test_workspace_paths_create_all_is_idempotent() {
     let dir = temp_dir();
-    let manager =
-        WorkspaceManager::create(root(&dir), "https://example.com/paths-idem", None, None)
-            .expect("SAFETY: create should succeed");
+    let manager = WorkspaceManager::create(
+        root(&dir),
+        "https://example.com/paths-idem",
+        None,
+        None,
+        None,
+    )
+    .expect("SAFETY: create should succeed");
 
     // Access the paths field explicitly via the WorkspacePaths type.
     let paths: &WorkspacePaths = &manager.paths;

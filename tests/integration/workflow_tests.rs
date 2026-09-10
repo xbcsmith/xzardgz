@@ -84,6 +84,7 @@ fn make_plan(plugin: &str, repo_path: &str, workspace_dir: &str, dry_run: bool) 
         reports: None,
         dry_run,
         resume: false,
+        correlation_id: None,
     }
 }
 
@@ -120,6 +121,7 @@ async fn test_scan_only_workflow_produces_scan_artifact() {
             branch: None,
             resume: false,
             workspace: None,
+            correlation_id: None,
         })
         .await
         .expect("scan-only execution must succeed");

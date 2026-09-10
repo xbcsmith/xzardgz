@@ -743,7 +743,7 @@ mod tests {
         provider: Arc<dyn crate::providers::base::Provider + Send + Sync>,
     ) -> PluginContext {
         // SAFETY: WorkspaceManager::create only fails on I/O errors; temp dirs are writable.
-        let manager = WorkspaceManager::create(root, "test://repo", None, None).unwrap();
+        let manager = WorkspaceManager::create(root, "test://repo", None, None, None).unwrap();
         let state = manager.state.clone();
         let workspace = Arc::new(manager);
         let mut config = Config::default();
@@ -1180,9 +1180,14 @@ mod tests {
         mock.expect_metadata().never();
         mock.expect_complete().never();
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-        let manager =
-            WorkspaceManager::create(tmp.path().to_str().unwrap(), "test://repo", None, None)
-                .unwrap();
+        let manager = WorkspaceManager::create(
+            tmp.path().to_str().unwrap(),
+            "test://repo",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let state = manager.state.clone();
         let workspace = Arc::new(manager);
         let mut config = Config::default();
@@ -1512,9 +1517,14 @@ mod tests {
         mock.expect_metadata().never();
         mock.expect_complete().never();
         let provider: Arc<dyn crate::providers::base::Provider + Send + Sync> = Arc::new(mock);
-        let manager =
-            WorkspaceManager::create(tmp.path().to_str().unwrap(), "test://repo", None, None)
-                .unwrap();
+        let manager = WorkspaceManager::create(
+            tmp.path().to_str().unwrap(),
+            "test://repo",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let state = manager.state.clone();
         let workspace = Arc::new(manager);
         let mut config = Config::default();

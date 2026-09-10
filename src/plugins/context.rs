@@ -369,7 +369,7 @@ mod tests {
     fn make_context_with_root(root: &str) -> PluginContext {
         // SAFETY: WorkspaceManager::create only fails on I/O errors; temp dirs
         // are always writable in a standard test environment.
-        let manager = WorkspaceManager::create(root, "test://repo", None, None).unwrap();
+        let manager = WorkspaceManager::create(root, "test://repo", None, None, None).unwrap();
         let state = manager.state.clone();
         let workspace = Arc::new(manager);
         let config = Arc::new(Config::default());
@@ -501,6 +501,7 @@ mod tests {
             "test://repo",
             None,
             None,
+            None,
         )
         .unwrap();
         let state = manager.state.clone();
@@ -550,6 +551,7 @@ mod tests {
         let manager = crate::workspace::WorkspaceManager::create(
             tmp.path().to_str().unwrap(),
             "test://repo",
+            None,
             None,
             None,
         )

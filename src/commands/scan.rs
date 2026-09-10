@@ -46,6 +46,7 @@ use crate::workflow::executor::{ExecutionInput, WorkflowExecutor};
 ///     format: None,
 ///     overwrite: false,
 ///     resume: false,
+///     correlation_id: None,
 /// };
 /// // Call from an async context: let result = execute(args).await;
 /// ```
@@ -106,6 +107,7 @@ pub async fn execute(args: ScanArgs) -> Result<()> {
 ///     format: None,
 ///     overwrite: false,
 ///     resume: false,
+///     correlation_id: None,
 /// };
 /// // `Config::default()` is used here purely to compile a doctest; a real
 /// // scan requires a real filesystem repository and workspace root.
@@ -124,6 +126,7 @@ pub async fn execute_with(args: ScanArgs, config: Config) -> Result<()> {
             branch: args.branch.clone(),
             resume: args.resume,
             workspace: args.workspace.clone(),
+            correlation_id: args.correlation_id.clone(),
         })
         .await?;
 
@@ -160,6 +163,7 @@ mod tests {
             format: None,
             overwrite: false,
             resume: false,
+            correlation_id: None,
         }
     }
 

@@ -87,6 +87,7 @@ fn make_security_plan(repo_path: &str, workspace_dir: &str) -> WorkflowPlan {
         reports: None,
         dry_run: false,
         resume: false,
+        correlation_id: None,
     }
 }
 
@@ -419,6 +420,7 @@ async fn test_security_review_without_sarif_does_not_create_sarif_file() {
         reports: None,
         dry_run: false,
         resume: false,
+        correlation_id: None,
     };
 
     let result = executor

@@ -42,6 +42,7 @@ fn make_run_args() -> RunArgs {
         max_findings: None,
         report_format: vec![],
         resume: false,
+        correlation_id: None,
     }
 }
 

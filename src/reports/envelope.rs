@@ -81,6 +81,14 @@ pub struct ReportEnvelope {
     /// enforced at the type level.
     #[serde(default)]
     pub scores: HashMap<String, f64>,
+
+    /// Correlation identifier for the run that produced this report.
+    ///
+    /// The same identifier appears in `WorkspaceState.correlation_id` and,
+    /// for watcher-triggered runs, in `WatcherResultMessage.correlation_id`.
+    /// `None` for reports produced before Phase 3 was deployed.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
 }
 
 impl ReportEnvelope {
@@ -134,6 +142,7 @@ impl ReportEnvelope {
             diagnostics: Vec::new(),
             risk_band: None,
             scores: HashMap::new(),
+            correlation_id: None,
         }
     }
 
@@ -301,6 +310,7 @@ mod tests {
         assert!(env.provider_metadata.is_none());
         assert!(env.model_id.is_none());
         assert!(env.risk_band.is_none());
+        assert!(env.correlation_id.is_none());
     }
 
     #[test]

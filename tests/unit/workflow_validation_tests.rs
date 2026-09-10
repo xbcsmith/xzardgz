@@ -38,6 +38,7 @@ fn make_valid_plan() -> WorkflowPlan {
         reports: None,
         dry_run: false,
         resume: false,
+        correlation_id: None,
     }
 }
 

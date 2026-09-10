@@ -1,12 +1,12 @@
 {
   "version": "1",
-  "report_id": "01M260MSND5RA1DH4CN56V2C1S",
-  "generated_at": "2026-09-10T15:58:07.022073Z",
+  "report_id": "01M263NMTQ43MVKRK8VQM46B2N",
+  "generated_at": "2026-09-10T16:51:00.568123Z",
   "plugin_name": "technical-review",
   "repository_name": "repo",
   "repository_url": null,
   "head_commit": null,
-  "workspace_id": "01M260MSN5A9JRDG898BFJ1JBT",
+  "workspace_id": "01M263NMTGAF65Y54QTWBWGA2Y",
   "scan_artifact_version": null,
   "provider_metadata": null,
   "model_id": null,
@@ -15,5 +15,6 @@
   },
   "diagnostics": [],
   "risk_band": null,
-  "scores": {}
+  "scores": {},
+  "correlation_id": null
 }
