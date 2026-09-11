@@ -82,6 +82,12 @@ pub enum Condition {
         metavar: MetavarId,
         /// The comparison expression (e.g. `"$BITS < 2048"`).
         comparison: String,
+        /// When `true`, strip trailing non-numeric characters from the bound text
+        /// before parsing (e.g. `"1024k"` becomes `"1024"`).
+        strip: bool,
+        /// Optional numeric base for parsing the bound text (e.g. `16` for hex).
+        /// When `None`, decimal (base 10) is used.
+        base: Option<u32>,
     },
 }
 

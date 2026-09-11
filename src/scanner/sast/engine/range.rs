@@ -7,11 +7,40 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
+/// The text and byte-range of a single metavariable capture.
+///
+/// A `MetavarValue` is produced by the AST pattern engine when a named
+/// metavariable (e.g. `$X`) is matched against a source node.  The `text`
+/// field contains the source text of the matched node; `start` and `end` are
+/// its half-open byte offsets `[start, end)` within the source file.
+///
+/// # Examples
+///
+/// ```
+/// use xzardgz::scanner::sast::engine::range::MetavarValue;
+///
+/// let mv = MetavarValue { text: "my_function".to_string(), start: 3, end: 14 };
+/// assert_eq!(mv.text, "my_function");
+/// assert_eq!(mv.end - mv.start, mv.text.len());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetavarValue {
+    /// Source text of the matched node.
+    pub text: String,
+    /// Byte offset of the start of the matched node (inclusive).
+    pub start: usize,
+    /// Byte offset of the end of the matched node (exclusive).
+    pub end: usize,
+}
+
 /// Metavariable bindings from a pattern match.
 ///
 /// The key is the metavariable name with the `$` prefix (e.g. `"$X"`, `"$FOO"`).
-/// The value is the source text the metavariable was bound to.
-pub type MetavarBindings = BTreeMap<String, String>;
+/// The value is a [`MetavarValue`] holding the bound source text and its byte
+/// offsets within the source file.
+pub type MetavarBindings = BTreeMap<String, MetavarValue>;
 
 /// A matched byte range in a source file together with metavariable bindings.
 ///
@@ -175,11 +204,13 @@ pub fn intersect(a: &RangeWithMetavars, b: &RangeWithMetavars) -> Option<RangeWi
     let start = a.start.max(b.start);
     let end = a.end.min(b.end);
 
-    // Build merged bindings; a conflicting assignment invalidates the intersection.
+    // Build merged bindings; a conflicting text value invalidates the intersection.
+    // Only the bound text is compared for compatibility; positional metadata is
+    // supplementary and does not affect whether two bindings agree.
     let mut bindings = a.bindings.clone();
     for (key, val) in &b.bindings {
         match bindings.get(key) {
-            Some(existing) if existing != val => return None,
+            Some(existing) if existing.text != val.text => return None,
             _ => {
                 bindings.insert(key.clone(), val.clone());
             }
@@ -284,7 +315,14 @@ mod tests {
     #[test]
     fn test_range_new_sets_all_fields() {
         let mut bindings = MetavarBindings::new();
-        bindings.insert("$X".to_string(), "foo".to_string());
+        bindings.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let r = RangeWithMetavars::new(3, 7, bindings.clone());
         assert_eq!(r.start, 3);
         assert_eq!(r.end, 7);
@@ -394,23 +432,57 @@ mod tests {
     #[test]
     fn test_intersect_compatible_bindings_are_merged() {
         let mut b1 = MetavarBindings::new();
-        b1.insert("$X".to_string(), "foo".to_string());
+        b1.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let mut b2 = MetavarBindings::new();
-        b2.insert("$Y".to_string(), "bar".to_string());
+        b2.insert(
+            "$Y".to_string(),
+            MetavarValue {
+                text: "bar".to_string(),
+                start: 10,
+                end: 13,
+            },
+        );
         let a = RangeWithMetavars::new(0, 10, b1);
         let b = RangeWithMetavars::new(3, 13, b2);
         // SAFETY: ranges overlap and bindings are disjoint (compatible).
         let merged = intersect(&a, &b).unwrap();
-        assert_eq!(merged.bindings.get("$X").map(String::as_str), Some("foo"));
-        assert_eq!(merged.bindings.get("$Y").map(String::as_str), Some("bar"));
+        assert_eq!(
+            merged.bindings.get("$X").map(|v| v.text.as_str()),
+            Some("foo")
+        );
+        assert_eq!(
+            merged.bindings.get("$Y").map(|v| v.text.as_str()),
+            Some("bar")
+        );
     }
 
     #[test]
     fn test_intersect_conflicting_bindings_returns_none() {
         let mut b1 = MetavarBindings::new();
-        b1.insert("$X".to_string(), "foo".to_string());
+        b1.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let mut b2 = MetavarBindings::new();
-        b2.insert("$X".to_string(), "bar".to_string());
+        b2.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "bar".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let a = RangeWithMetavars::new(0, 10, b1);
         let b = RangeWithMetavars::new(5, 15, b2);
         assert!(intersect(&a, &b).is_none());
@@ -419,14 +491,31 @@ mod tests {
     #[test]
     fn test_intersect_same_binding_both_sides_returns_some() {
         let mut b1 = MetavarBindings::new();
-        b1.insert("$X".to_string(), "foo".to_string());
+        b1.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let mut b2 = MetavarBindings::new();
-        b2.insert("$X".to_string(), "foo".to_string());
+        b2.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let a = RangeWithMetavars::new(0, 10, b1);
         let b = RangeWithMetavars::new(5, 15, b2);
-        // SAFETY: identical binding value is compatible.
+        // SAFETY: identical binding text is compatible.
         let merged = intersect(&a, &b).unwrap();
-        assert_eq!(merged.bindings.get("$X").map(String::as_str), Some("foo"));
+        assert_eq!(
+            merged.bindings.get("$X").map(|v| v.text.as_str()),
+            Some("foo")
+        );
     }
 
     #[test]
@@ -471,9 +560,23 @@ mod tests {
     #[test]
     fn test_union_keeps_different_bindings_as_distinct() {
         let mut b1 = MetavarBindings::new();
-        b1.insert("$X".to_string(), "foo".to_string());
+        b1.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "foo".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let mut b2 = MetavarBindings::new();
-        b2.insert("$X".to_string(), "bar".to_string());
+        b2.insert(
+            "$X".to_string(),
+            MetavarValue {
+                text: "bar".to_string(),
+                start: 0,
+                end: 3,
+            },
+        );
         let r1 = RangeWithMetavars::new(0, 5, b1);
         let r2 = RangeWithMetavars::new(0, 5, b2);
         let result = union(vec![vec![r1], vec![r2]]);

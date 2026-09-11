@@ -17,6 +17,7 @@
 //! at evaluation time or produce no matches.
 
 use crate::scanner::sast::ast::lang::Language;
+use crate::scanner::sast::engine::compare::validate_comparison;
 use crate::scanner::sast::error::SkipReason;
 use crate::scanner::sast::rule::schema::{PatternTerm, RuleSchema};
 
@@ -53,6 +54,13 @@ fn scan_term_for_unsupported(term: &PatternTerm, reasons: &mut Vec<SkipReason>) 
     }
     if term.metavariable_analysis.is_some() {
         add_reason(reasons, SkipReason::MetavariableAnalysis);
+    }
+    // Validate metavariable-comparison expressions at compile time.
+    // Any expression outside the closed grammar produces UnsupportedComparison.
+    if let Some(c) = &term.metavariable_comparison
+        && validate_comparison(&c.comparison).is_err()
+    {
+        add_reason(reasons, SkipReason::UnsupportedComparison);
     }
     // Recurse into nested pattern-either sub-terms
     if let Some(inner_terms) = &term.pattern_either {
@@ -416,6 +424,62 @@ mod tests {
         assert_eq!(
             count, 1,
             "two terms with metavariable-analysis must produce exactly one MetavariableAnalysis reason"
+        );
+    }
+
+    #[test]
+    fn test_compat_unsupported_comparison_expression_produces_skip_reason() {
+        use crate::scanner::sast::rule::schema::MetavarComparisonCondition;
+        // An expression with `+` (arithmetic) is outside the closed grammar.
+        let term = PatternTerm {
+            pattern: Some("$X".to_string()),
+            metavariable_comparison: Some(MetavarComparisonCondition {
+                metavariable: "$X".to_string(),
+                comparison: "$X + 1 < 2048".to_string(),
+                base: None,
+                strip: None,
+            }),
+            ..empty_term()
+        };
+        let rule = RuleSchema {
+            pattern: None,
+            patterns: Some(vec![term]),
+            ..make_rule(vec!["rust"])
+        };
+        let reasons = check_compat(&rule);
+        assert!(
+            reasons
+                .iter()
+                .any(|r| matches!(r, SkipReason::UnsupportedComparison)),
+            "arithmetic in comparison must produce UnsupportedComparison skip reason"
+        );
+    }
+
+    #[test]
+    fn test_compat_valid_comparison_expression_produces_no_skip_reason() {
+        use crate::scanner::sast::rule::schema::MetavarComparisonCondition;
+        // A valid expression inside the closed grammar must not produce any reason.
+        let term = PatternTerm {
+            pattern: Some("$BITS".to_string()),
+            metavariable_comparison: Some(MetavarComparisonCondition {
+                metavariable: "$BITS".to_string(),
+                comparison: "$BITS < 2048".to_string(),
+                base: None,
+                strip: None,
+            }),
+            ..empty_term()
+        };
+        let rule = RuleSchema {
+            pattern: None,
+            patterns: Some(vec![term]),
+            ..make_rule(vec!["rust"])
+        };
+        let reasons = check_compat(&rule);
+        assert!(
+            !reasons
+                .iter()
+                .any(|r| matches!(r, SkipReason::UnsupportedComparison)),
+            "valid comparison grammar must not produce UnsupportedComparison skip reason"
         );
     }
 }

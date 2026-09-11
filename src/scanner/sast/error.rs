@@ -109,6 +109,19 @@ pub enum SkipReason {
     MetavariableAnalysis,
     /// None of the rule's declared languages are supported by this engine.
     NoSupportedLanguage(Vec<String>),
+    /// A `metavariable-comparison` expression uses constructs outside the supported grammar.
+    ///
+    /// The closed-grammar evaluator in `engine/compare.rs` accepts only:
+    /// integer/float literals, metavariable references, `< <= > >= == !=`, and
+    /// `and` / `or` / `not`. Any other construct (arithmetic, parentheses, function
+    /// calls, etc.) produces this reason and causes the rule to be skipped entirely.
+    UnsupportedComparison,
+    /// A `metavariable-pattern` condition exceeded the maximum recursion depth (10).
+    ///
+    /// Recursion occurs when the bound code of a metavariable is itself evaluated
+    /// against patterns that contain further `metavariable-pattern` conditions.
+    /// The depth is capped at 10 to prevent stack overflows.
+    RecursionLimitExceeded,
 }
 
 // ---------------------------------------------------------------------------

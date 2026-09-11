@@ -1,4 +1,4 @@
-//! Formula evaluator for Phase 2 of the AST-mode SAST engine.
+//! Formula evaluator for the AST-mode SAST engine (Phase 2 + Phase 3).
 //!
 //! This module provides [`eval_formula`] and [`scan_rule`], the primary entry
 //! points for evaluating a compiled [`Formula`] tree against a parsed source
@@ -10,12 +10,22 @@
 //! |---------|-----------|
 //! | `Leaf(Pattern(s))` | AST pattern match via [`PatternCompiler`] |
 //! | `Leaf(Regex(_))`  | Returns empty set (regex mode is handled by [`RegexModeScanner`]) |
-//! | `And { conjuncts, negations, .. }` | Intersection of conjuncts minus negations |
+//! | `And { conjuncts, negations, conditions, focus }` | Intersection of conjuncts minus negations, then conditions filter, then focus narrows |
 //! | `Or(children)` | Union of all children |
 //! | `Inside(inner)` | Containment filter when used inside `And`; standalone evaluates inner |
 //!
-//! Metavariable conditions (`metavariable-*`) and `focus` are deferred to
-//! Phase 3; raw bindings are preserved in [`RangeWithMetavars::bindings`].
+//! # Evaluation order for `And`
+//!
+//! 1. Intersect regular conjuncts.
+//! 2. Apply `Inside` containment filters.
+//! 3. Subtract negations (`pattern-not*`).
+//! 4. Apply metavariable conditions (`metavariable-regex`, `metavariable-pattern`,
+//!    `metavariable-comparison`).
+//! 5. Apply `focus-metavariable` narrowing.
+//!
+//! If any condition returns an unsupported-construct or recursion-limit error,
+//! the entire rule evaluation returns an empty set (the rule is effectively skipped
+//! for this file without aborting the scan).
 //!
 //! # Timeout and truncation
 //!
@@ -29,7 +39,6 @@
 //! [`SastEngineConfig::max_matches_per_file`]. When the cap is hit a
 //! [`TruncationReason::MaxMatchesReached`] is returned.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,10 +48,13 @@ use ast_grep_language::SupportLang;
 
 use crate::scanner::sast::ast::parse::CachedRoot;
 use crate::scanner::sast::config::SastEngineConfig;
+use crate::scanner::sast::engine::conditions::{ConditionError, apply_conditions, apply_focus};
 use crate::scanner::sast::engine::pattern::PatternCompiler;
-use crate::scanner::sast::engine::range::{RangeWithMetavars, intersect, subtract, union};
+use crate::scanner::sast::engine::range::{
+    MetavarBindings, MetavarValue, RangeWithMetavars, intersect, subtract, union,
+};
 use crate::scanner::sast::error::SastError;
-use crate::scanner::sast::rule::ir::{Formula, Leaf, RuleIr};
+use crate::scanner::sast::rule::ir::{Condition, Formula, Leaf, MetavarId, RuleIr};
 
 // ---------------------------------------------------------------------------
 // TruncationReason
@@ -76,8 +88,7 @@ struct EvalContext<'a> {
     compiler: &'a PatternCompiler,
     /// Engine configuration for timeout and match-cap limits.
     config: &'a SastEngineConfig,
-    /// Rule identifier used in error messages (reserved for Phase 3).
-    #[allow(dead_code)]
+    /// Rule identifier used in error messages.
     rule_id: &'a str,
     /// Absolute time after which evaluation must stop.
     deadline: Instant,
@@ -288,14 +299,14 @@ fn eval_recursive(
         Formula::Leaf(Leaf::Regex(_)) => Ok((vec![], None)),
 
         // ---------------------------------------------------------------
-        // And: intersection of conjuncts minus negations
+        // And: intersection of conjuncts minus negations, then conditions, then focus
         // ---------------------------------------------------------------
         Formula::And {
             conjuncts,
             negations,
-            conditions: _,
-            focus: _,
-        } => eval_and(conjuncts, negations, root, ctx),
+            conditions,
+            focus,
+        } => eval_and(conjuncts, negations, conditions, focus, root, ctx),
 
         // ---------------------------------------------------------------
         // Or: union of alternatives
@@ -371,19 +382,27 @@ fn eval_leaf_pattern(
         let start = range.start;
         let end = range.end;
 
-        // Collect metavariable bindings as owned Strings to avoid
-        // borrow conflicts with the CachedRoot. The NodeMatch and its
-        // MetaVarEnv borrow from `root`, so all data must be extracted
-        // into owned values before the next iteration.
+        // Collect metavariable bindings as owned values to avoid borrow
+        // conflicts with the CachedRoot. The NodeMatch and its MetaVarEnv
+        // borrow from `root`, so all data must be extracted into owned values
+        // before the next iteration.
         let env = node_match.get_env();
-        let mut bindings: BTreeMap<String, String> = BTreeMap::new();
+        let mut bindings: MetavarBindings = MetavarBindings::new();
         for mv in env.get_matched_variables() {
             if let MetaVariable::Capture(name, _) = mv
                 && let Some(bound_node) = env.get_match(&name)
             {
+                let bound_range = bound_node.range();
                 let text = bound_node.text().to_string();
                 // Store with the conventional $ prefix.
-                bindings.insert(format!("${name}"), text);
+                bindings.insert(
+                    format!("${name}"),
+                    MetavarValue {
+                        text,
+                        start: bound_range.start,
+                        end: bound_range.end,
+                    },
+                );
             }
         }
 
@@ -399,10 +418,24 @@ fn eval_leaf_pattern(
 // ---------------------------------------------------------------------------
 
 /// Evaluate an `And` node: intersect conjuncts, apply Inside filters, subtract
-/// negations.
+/// negations, apply metavariable conditions, then apply focus-metavariable narrowing.
+///
+/// Evaluation order:
+/// 1. Intersect regular conjuncts.
+/// 2. Apply `Inside` containment filters.
+/// 3. Subtract negations (`pattern-not*`).
+/// 4. Apply metavariable conditions (`metavariable-regex`, `metavariable-pattern`,
+///    `metavariable-comparison`).
+/// 5. Apply `focus-metavariable` narrowing.
+///
+/// When a condition returns an unsupported-construct or recursion-limit error,
+/// the evaluation returns an empty set (the rule is effectively skipped for this
+/// file without aborting the broader scan).
 fn eval_and(
     conjuncts: &[Formula],
     negations: &[Formula],
+    conditions: &[Condition],
+    focus: &[MetavarId],
     root: &CachedRoot,
     ctx: &mut EvalContext<'_>,
 ) -> Result<(Vec<RangeWithMetavars>, Option<TruncationReason>), SastError> {
@@ -520,6 +553,43 @@ fn eval_and(
 
         let all_negations = union(neg_sets);
         current_ranges = subtract(current_ranges, &all_negations);
+    }
+
+    // --- Apply metavariable conditions ---
+    //
+    // Conditions are evaluated after negation subtraction. Each range is tested
+    // against all conditions in order; ranges that fail any condition are dropped.
+    // Unsupported-comparison or recursion-limit errors skip the entire rule
+    // evaluation for this file (return empty, no abort).
+    if !conditions.is_empty() && !current_ranges.is_empty() {
+        current_ranges = match apply_conditions(current_ranges, conditions, ctx.compiler, 0) {
+            Ok(filtered) => filtered,
+            Err(ConditionError::UnsupportedComparison(_))
+            | Err(ConditionError::RecursionLimitExceeded) => {
+                // Skip this rule evaluation: unsupported construct or depth exceeded.
+                return Ok((vec![], truncation));
+            }
+            Err(ConditionError::RegexCompile(cause)) => {
+                return Err(SastError::RegexCompile {
+                    rule_id: ctx.rule_id.to_string(),
+                    cause,
+                });
+            }
+            Err(ConditionError::UnboundMetavar(_)) | Err(ConditionError::TypeMismatch(_)) => {
+                // These errors should never bubble up from apply_conditions
+                // (they are handled per-range inside it). Treat as empty.
+                vec![]
+            }
+        };
+    }
+
+    // --- Apply focus-metavariable narrowing ---
+    //
+    // Focus is applied last. Each surviving range is narrowed to the byte range
+    // of the focused metavariable(s). Ranges with missing or non-overlapping
+    // focus bindings are dropped.
+    if !focus.is_empty() && !current_ranges.is_empty() {
+        current_ranges = apply_focus(current_ranges, focus);
     }
 
     Ok((current_ranges, truncation))
@@ -940,7 +1010,7 @@ mod tests {
             "metavar $F must be bound; bindings: {bindings:?}"
         );
         assert_eq!(
-            bindings.get("$F").map(|s| s.as_str()),
+            bindings.get("$F").map(|v| v.text.as_str()),
             Some("my_function"),
             "metavar $F must be bound to the function name"
         );
@@ -993,13 +1063,17 @@ mod tests {
         assert!(reason.is_none());
     }
 
-    // Verify that Condition variants are accepted in And without panicking
-    // (they are ignored in Phase 2).
+    // Phase 3: In Phase 3, conditions and focus ARE evaluated.
+    // The regex "foo" (anchored) matches the binding $F = "foo", so the range survives.
+    // The focus on $F narrows the reported range to the byte range of `foo` in the source.
     #[test]
-    fn test_eval_and_conditions_are_ignored_in_phase_2() {
-        let cached = make_cached_root("fn foo() {}");
+    fn test_eval_and_metavar_regex_condition_filters_non_matching_binding() {
+        let source = "fn foo() {} fn bar() {}".to_string();
+        let cached = make_cached_root(&source);
         let compiler = default_compiler();
         let config = default_config();
+        // Pattern matches both `fn foo() {}` and `fn bar() {}`.
+        // The regex condition `$F =~ ^foo$` keeps only the `foo` match.
         let formula = Formula::And {
             conjuncts: vec![Formula::Leaf(Leaf::Pattern("fn $F() {}".to_string()))],
             negations: vec![],
@@ -1008,13 +1082,179 @@ mod tests {
                 regex: "foo".to_string(),
                 not: false,
             }],
+            focus: vec![],
+        };
+
+        let (matches, reason) =
+            eval_formula(&formula, &cached, &compiler, &config, "test").unwrap();
+        assert!(reason.is_none());
+        // Only the `foo` function should remain after the regex condition.
+        assert_eq!(
+            matches.len(),
+            1,
+            "regex condition must filter out the bar match"
+        );
+        let binding = matches[0].bindings.get("$F").expect("$F must be bound");
+        assert_eq!(binding.text, "foo");
+    }
+
+    #[test]
+    fn test_eval_and_metavar_regex_condition_not_flag_inverts_filter() {
+        let source = "fn foo() {} fn bar() {}".to_string();
+        let cached = make_cached_root(&source);
+        let compiler = default_compiler();
+        let config = default_config();
+        // With not=true, the regex condition keeps only the functions whose name does NOT match "foo".
+        let formula = Formula::And {
+            conjuncts: vec![Formula::Leaf(Leaf::Pattern("fn $F() {}".to_string()))],
+            negations: vec![],
+            conditions: vec![Condition::MetavarRegex {
+                metavar: "$F".to_string(),
+                regex: "foo".to_string(),
+                not: true,
+            }],
+            focus: vec![],
+        };
+
+        let (matches, reason) =
+            eval_formula(&formula, &cached, &compiler, &config, "test").unwrap();
+        assert!(reason.is_none());
+        // Only the `bar` function should remain.
+        assert_eq!(
+            matches.len(),
+            1,
+            "inverted regex condition must keep only non-foo match"
+        );
+        let binding = matches[0].bindings.get("$F").expect("$F must be bound");
+        assert_eq!(binding.text, "bar");
+    }
+
+    #[test]
+    fn test_eval_and_focus_metavariable_narrows_range() {
+        // The source has `fn foo() {}`. Matching `fn $F() {}` binds $F to "foo".
+        // After focus on $F the reported range should span only "foo".
+        let source = "fn foo() {}".to_string();
+        let foo_start = source.find("foo").expect("'foo' must be in source");
+        let foo_end = foo_start + 3;
+        let cached = make_cached_root(&source);
+        let compiler = default_compiler();
+        let config = default_config();
+        let formula = Formula::And {
+            conjuncts: vec![Formula::Leaf(Leaf::Pattern("fn $F() {}".to_string()))],
+            negations: vec![],
+            conditions: vec![],
             focus: vec!["$F".to_string()],
+        };
+
+        let (matches, reason) =
+            eval_formula(&formula, &cached, &compiler, &config, "test").unwrap();
+        assert!(reason.is_none());
+        assert_eq!(matches.len(), 1, "focus must produce exactly one match");
+        assert_eq!(
+            matches[0].start, foo_start,
+            "focus must narrow start to the bound metavar"
+        );
+        assert_eq!(
+            matches[0].end, foo_end,
+            "focus must narrow end to the bound metavar"
+        );
+    }
+
+    #[test]
+    fn test_eval_and_metavar_comparison_filters_weak_rsa_key() {
+        // Worked-example integration test: rust-weak-rsa-key.
+        // A call with 1024 bits must match; a call with 2048 bits must not.
+        let source = "let key = RsaPrivateKey::new(&mut rng, 1024).unwrap();".to_string();
+        let bits_start = source.find("1024").expect("'1024' must be in source");
+        let bits_end = bits_start + 4;
+        let cached = make_cached_root(&source);
+        let compiler = default_compiler();
+        let config = default_config();
+
+        let formula = Formula::And {
+            conjuncts: vec![Formula::Leaf(Leaf::Pattern(
+                "RsaPrivateKey::new(&mut $RNG, $BITS)".to_string(),
+            ))],
+            negations: vec![],
+            conditions: vec![Condition::MetavarComparison {
+                metavar: "$BITS".to_string(),
+                comparison: "$BITS < 2048".to_string(),
+                strip: false,
+                base: None,
+            }],
+            focus: vec!["$BITS".to_string()],
+        };
+
+        let (matches, reason) =
+            eval_formula(&formula, &cached, &compiler, &config, "test").unwrap();
+        assert!(reason.is_none());
+        assert_eq!(matches.len(), 1, "weak RSA call must match");
+        assert_eq!(
+            matches[0].start, bits_start,
+            "focus must narrow start to $BITS"
+        );
+        assert_eq!(matches[0].end, bits_end, "focus must narrow end to $BITS");
+    }
+
+    #[test]
+    fn test_eval_and_metavar_comparison_does_not_match_compliant_rsa_key() {
+        // A call with 2048 bits must NOT match: 2048 < 2048 is false.
+        let source = "let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();".to_string();
+        let cached = make_cached_root(&source);
+        let compiler = default_compiler();
+        let config = default_config();
+
+        let formula = Formula::And {
+            conjuncts: vec![Formula::Leaf(Leaf::Pattern(
+                "RsaPrivateKey::new(&mut $RNG, $BITS)".to_string(),
+            ))],
+            negations: vec![],
+            conditions: vec![Condition::MetavarComparison {
+                metavar: "$BITS".to_string(),
+                comparison: "$BITS < 2048".to_string(),
+                strip: false,
+                base: None,
+            }],
+            focus: vec!["$BITS".to_string()],
+        };
+
+        let (matches, reason) =
+            eval_formula(&formula, &cached, &compiler, &config, "test").unwrap();
+        assert!(reason.is_none());
+        assert!(
+            matches.is_empty(),
+            "compliant RSA key must not match (2048 < 2048 is false)"
+        );
+    }
+
+    #[test]
+    fn test_eval_and_unsupported_comparison_returns_empty_not_error() {
+        // An unsupported comparison expression (arithmetic) must not panic or error;
+        // it must return an empty match set (rule is effectively skipped).
+        let cached = make_cached_root("fn foo() {}");
+        let compiler = default_compiler();
+        let config = default_config();
+        let formula = Formula::And {
+            conjuncts: vec![Formula::Leaf(Leaf::Pattern("fn $F() {}".to_string()))],
+            negations: vec![],
+            conditions: vec![Condition::MetavarComparison {
+                metavar: "$F".to_string(),
+                comparison: "$F + 1 < 100".to_string(), // unsupported: arithmetic
+                strip: false,
+                base: None,
+            }],
+            focus: vec![],
         };
 
         let result = eval_formula(&formula, &cached, &compiler, &config, "test");
         assert!(
             result.is_ok(),
-            "And with conditions must not error in Phase 2"
+            "unsupported comparison must not produce Err"
+        );
+        let (matches, _) = result.unwrap();
+        assert!(
+            matches.is_empty(),
+            "unsupported comparison must produce empty results (rule skipped)"
         );
     }
 }

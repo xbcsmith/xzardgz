@@ -188,6 +188,8 @@ fn compile_patterns(rule_id: &str, terms: &[PatternTerm]) -> Result<Formula, Rul
             conditions.push(Condition::MetavarComparison {
                 metavar: c.metavariable.clone(),
                 comparison: c.comparison.clone(),
+                strip: c.strip.unwrap_or(false),
+                base: c.base,
             });
         }
 
