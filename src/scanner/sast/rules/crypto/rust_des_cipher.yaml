@@ -1,0 +1,25 @@
+rules:
+  - id: rust-des-cipher
+    message: >
+      DES (56-bit key) and Triple-DES are cryptographically weak block ciphers
+      (CWE-327). DES was broken in 1998 by brute force; 3DES has practical
+      attacks. Use AES-256-GCM or ChaCha20-Poly1305 instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - des
+    pattern-either:
+      - pattern: Des::new($KEY)
+      - pattern: TdesEde2::new($KEY)
+      - pattern: TdesEde3::new($KEY)
+      - pattern: des::Des::new($KEY)

@@ -35,6 +35,7 @@ ulid = "1.1"
 ast-grep-core = "0.45"
 ast-grep-language = { version = "0.45", default-features = false, features = ["tree-sitter-rust"] }
 aho-corasick = "1"
+regex = "1"
 blake2 = "0.10"
 rayon = "1"
 globset = "0.4"

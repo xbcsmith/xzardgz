@@ -1,0 +1,23 @@
+rules:
+  - id: rust-rc4-cipher
+    message: >
+      RC4 is a broken stream cipher (CWE-327) with known statistical biases.
+      TLS has explicitly prohibited RC4 since RFC 7465 (2015). Use
+      ChaCha20-Poly1305 (chacha20poly1305 crate) or AES-256-GCM instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - rc4
+    pattern-either:
+      - pattern: Rc4::new($KEY)
+      - pattern: rc4::Rc4::new($KEY)

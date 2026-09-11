@@ -1,0 +1,25 @@
+rules:
+  - id: rust-unsafe-ffi-call
+    message: >
+      A call to a foreign function inside an unsafe block was detected (CWE-676).
+      Unsafe FFI calls bypass Rust memory safety guarantees. Verify pointer
+      validity, null handling, and aliasing rules. Add a SAFETY comment
+      documenting the invariants that make this call sound.
+    languages:
+      - rust
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-676
+        - CWE-119
+      confidence: LOW
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+    patterns:
+      - pattern: |
+          unsafe { $FUNC($ARGS) }
+      - pattern-not: |
+          // SAFETY: $JUSTIFICATION
+          unsafe { $FUNC($ARGS) }

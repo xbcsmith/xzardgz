@@ -1,0 +1,25 @@
+rules:
+  - id: rust-md5-usage
+    message: >
+      MD5 is a cryptographically broken hash function (CWE-327, CWE-328) with
+      known collision vulnerabilities. Use SHA-256 (sha2 crate) or SHA-3
+      (sha3 crate) for security-sensitive hashing.
+    languages:
+      - rust
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-327
+        - CWE-328
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - md5
+    pattern-either:
+      - pattern: md5::compute($DATA)
+      - pattern: Md5::new()
+      - pattern: <Md5 as Digest>::new()

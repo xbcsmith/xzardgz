@@ -248,6 +248,12 @@ impl From<RepositoryError> for PipelineError {
     }
 }
 
+impl From<crate::scanner::sast::error::SastError> for PipelineError {
+    fn from(e: crate::scanner::sast::error::SastError) -> Self {
+        PipelineError::Scanner(e.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

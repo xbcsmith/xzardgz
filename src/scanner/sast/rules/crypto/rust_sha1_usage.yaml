@@ -1,0 +1,25 @@
+rules:
+  - id: rust-sha1-usage
+    message: >
+      SHA-1 is cryptographically broken (CWE-327) and must not be used for
+      new security-sensitive applications. NIST deprecated SHA-1 for most
+      uses in 2011. Use SHA-256 or SHA-3 instead.
+    languages:
+      - rust
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-327
+        - CWE-328
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - sha1
+    pattern-either:
+      - pattern: sha1::Sha1::new()
+      - pattern: Sha1::new()
+      - pattern: <Sha1 as Digest>::new()

@@ -38,6 +38,7 @@ pub mod language;
 pub mod patterns;
 pub mod preselect;
 pub mod result;
+pub mod sast;
 pub mod scoring;
 
 // ---------------------------------------------------------------------------
