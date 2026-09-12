@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos01/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "xzardgz-sast",
+          "version": "0.1.0",
+          "informationUri": "https://github.com/xbcsmith/xzardgz",
+          "rules": []
+        }
+      },
+      "results": []
+    }
+  ]
+}

@@ -243,6 +243,12 @@ impl GitWriteRepository {
             .ok_or_else(|| PipelineError::Git("repository is bare; cannot commit".to_string()))?
             .to_path_buf();
 
+        // On macOS, /var is a symlink to /private/var. git2 resolves the workdir
+        // to the canonical (real) path while tempfile and std::env produce the
+        // unresolved symlink path. Canonicalise once so that strip_prefix
+        // compares real paths on every platform.
+        let canonical_workdir = std::fs::canonicalize(&workdir).unwrap_or(workdir.clone());
+
         let mut index = self
             .repo
             .index()
@@ -251,16 +257,24 @@ impl GitWriteRepository {
         for p in paths {
             let path = p.as_ref();
             let rel_path = if path.is_absolute() {
-                path.strip_prefix(&workdir).map_err(|_| {
-                    PipelineError::Git(format!(
-                        "path {:?} is not inside workdir {:?}",
-                        path, workdir
-                    ))
-                })?
+                // Resolve symlinks in the supplied path so that the prefix
+                // comparison is reliable even when the caller used a symlinked
+                // temporary directory (common on macOS).
+                let canonical_path =
+                    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                canonical_path
+                    .strip_prefix(&canonical_workdir)
+                    .map(|rel| rel.to_path_buf())
+                    .map_err(|_| {
+                        PipelineError::Git(format!(
+                            "path {:?} is not inside workdir {:?}",
+                            path, canonical_workdir
+                        ))
+                    })?
             } else {
-                path
+                path.to_path_buf()
             };
-            index.add_path(rel_path).map_err(|e| {
+            index.add_path(&rel_path).map_err(|e| {
                 PipelineError::Git(format!("failed to stage {:?}: {}", rel_path, e))
             })?;
         }

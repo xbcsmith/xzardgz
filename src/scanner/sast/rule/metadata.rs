@@ -137,7 +137,10 @@ pub enum Category {
 ///
 /// All fields are optional; rules that omit metadata entirely set this to
 /// `None` in [`crate::scanner::sast::rule::ir::RuleIr`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The `Default` implementation produces a `RuleMetadata` with all fields
+/// set to `None`, representing a rule with no declared metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuleMetadata {
     /// Free-text description of what the rule detects.
     pub description: Option<String>,

@@ -19,6 +19,9 @@ pub mod ast;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod fingerprint;
+pub mod match_model;
+pub mod output;
 pub mod rule;
 pub mod target;
 
@@ -41,33 +44,16 @@ use crate::scanner::sast::engine::formula::scan_rule;
 use crate::scanner::sast::engine::pattern::PatternCompiler;
 use crate::scanner::sast::engine::regex_mode::RegexModeScanner;
 use crate::scanner::sast::error::SastError;
+use crate::scanner::sast::fingerprint::compute_fingerprint;
+use crate::scanner::sast::match_model::{MatchSnippet, MetavarBinding, Position};
 use crate::scanner::sast::rule::ir::RuleIr;
+use crate::scanner::sast::rule::metadata::Confidence;
 use crate::scanner::sast::target::discover::{DiscoveryConfig, discover_files};
 use crate::scanner::sast::target::prefilter::Prefilter;
 
 // ---------------------------------------------------------------------------
 // Public output types
 // ---------------------------------------------------------------------------
-
-/// A single match produced by the SAST engine.
-///
-/// This is the Phase 4 preliminary definition. Phase 5 will extend it with
-/// `message`, `severity`, `snippet`, `fingerprint`, and `fix` fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SastMatch {
-    /// Filesystem path of the matched file.
-    pub path: PathBuf,
-    /// Byte offset of the start of the match (inclusive).
-    pub start: usize,
-    /// Byte offset of the end of the match (exclusive).
-    pub end: usize,
-    /// Rule identifier that produced this match.
-    pub rule_id: String,
-    /// Metavariable bindings from the match (text only; positions added in Phase 5).
-    pub bindings: BTreeMap<String, String>,
-    /// Whether the match result was truncated by the per-file match cap.
-    pub truncated: bool,
-}
 
 /// A rule that could not be evaluated during the scan.
 #[derive(Debug, Clone)]
@@ -82,7 +68,7 @@ pub struct SkippedRule {
 #[derive(Debug)]
 pub struct SastScanReport {
     /// All matches found across all scanned files, sorted by (path, start, end, rule_id).
-    pub matches: Vec<SastMatch>,
+    pub matches: Vec<match_model::SastMatch>,
     /// Rules that failed to initialise (e.g. regex compile error at scan time).
     pub skipped_rules: Vec<SkippedRule>,
     /// Number of files that passed the prefilter and were fully scanned.
@@ -247,13 +233,13 @@ impl SastEngine {
         // Regex rules are pre-compiled into RegexModeScanner instances; any that
         // fail to compile are recorded as skipped and excluded from the scan.
         let mut skipped_rules: Vec<SkippedRule> = Vec::new();
-        let mut regex_scanners: Vec<(String, RegexModeScanner)> = Vec::new();
+        let mut regex_scanners: Vec<(RuleIr, RegexModeScanner)> = Vec::new();
         let mut ast_rules: Vec<RuleIr> = Vec::new();
 
         for rule in &self.rules {
             if rule.applies_to_regex_mode() {
                 match RegexModeScanner::new(rule) {
-                    Ok(scanner) => regex_scanners.push((rule.id.clone(), scanner)),
+                    Ok(scanner) => regex_scanners.push((rule.clone(), scanner)),
                     Err(e) => skipped_rules.push(SkippedRule {
                         rule_id: rule.id.clone(),
                         reason: e.to_string(),
@@ -278,6 +264,9 @@ impl SastEngine {
             .build()
             .map_err(|e| SastError::Internal(format!("failed to build thread pool: {e}")))?;
 
+        // Wrap root in Arc<PathBuf> so it can be safely shared across threads.
+        let scan_root = Arc::new(root.to_path_buf());
+
         let raw_results: Vec<FileResult> = thread_pool.install(|| {
             paths
                 .par_iter()
@@ -286,6 +275,7 @@ impl SastEngine {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         process_file(
                             path,
+                            &scan_root,
                             &ast_rules,
                             &regex_scanners,
                             &prefilter,
@@ -306,7 +296,7 @@ impl SastEngine {
         });
 
         // --- Step 5: aggregate ---
-        let mut all_matches: Vec<SastMatch> = Vec::new();
+        let mut all_matches: Vec<match_model::SastMatch> = Vec::new();
         let mut scanned_file_count = 0usize;
         let mut skipped_file_count = 0usize;
         let mut parse_error_count = 0usize;
@@ -329,8 +319,8 @@ impl SastEngine {
         all_matches.sort_by(|a, b| {
             a.path
                 .cmp(&b.path)
-                .then(a.start.cmp(&b.start))
-                .then(a.end.cmp(&b.end))
+                .then(a.start.byte.cmp(&b.start.byte))
+                .then(a.end.byte.cmp(&b.end.byte))
                 .then(a.rule_id.cmp(&b.rule_id))
         });
 
@@ -356,7 +346,7 @@ impl SastEngine {
 #[allow(dead_code)]
 struct FileResult {
     path: PathBuf,
-    matches: Vec<SastMatch>,
+    matches: Vec<match_model::SastMatch>,
     /// True if the file was skipped (prefiltered, binary, too large, unreadable).
     skipped: bool,
     /// True if AST parsing encountered errors for this file.
@@ -372,14 +362,24 @@ struct FileResult {
 /// Returns a [`FileResult`] describing the outcome. Never panics; callers
 /// should additionally wrap this with `std::panic::catch_unwind` for full
 /// isolation.
+///
+/// `root` is the scan root used to compute a repo-relative path for each
+/// match.  No absolute path appears in the returned [`SastMatch`] items or
+/// their fingerprints.
 fn process_file(
     path: &Path,
+    root: &Path,
     ast_rules: &[RuleIr],
-    regex_scanners: &[(String, RegexModeScanner)],
+    regex_scanners: &[(RuleIr, RegexModeScanner)],
     prefilter: &Prefilter,
     config: &SastEngineConfig,
     compiler: &PatternCompiler,
 ) -> FileResult {
+    // Compute the repo-relative path once; used for both SastMatch.path and fingerprints.
+    let rel_path: PathBuf = path
+        .strip_prefix(root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| path.to_path_buf());
     // 1. Read file bytes.
     let content = match std::fs::read(path) {
         Ok(c) => c,
@@ -410,19 +410,27 @@ fn process_file(
         return skipped_result(path);
     }
 
-    let mut matches: Vec<SastMatch> = Vec::new();
+    // Decode content once; shared by AST and regex paths.
+    let src_cow = String::from_utf8_lossy(&content);
+    let src: &str = src_cow.as_ref();
+
+    let mut matches: Vec<match_model::SastMatch> = Vec::new();
     let mut parse_error = false;
     let mut truncated_count = 0usize;
     let lang = Language::from_path(path);
+    // Per-(rule_id, path) match counter for stable fingerprints.
+    let mut fp_counters: BTreeMap<String, usize> = BTreeMap::new();
 
     // 5. AST rules (Rust files only).
     if lang == Language::Rust && !ast_rules.is_empty() {
-        let src = String::from_utf8_lossy(&content);
         use ast_grep_core::tree_sitter::LanguageExt;
         use ast_grep_language::SupportLang;
-        let root = SupportLang::Rust.ast_grep(src.as_ref());
-        let density = ErrorNodeDensity::from_root(&root);
-        let cached = CachedRoot { root, density };
+        let ast_root = SupportLang::Rust.ast_grep(src);
+        let density = ErrorNodeDensity::from_root(&ast_root);
+        let cached = CachedRoot {
+            root: ast_root,
+            density,
+        };
 
         for rule in ast_rules {
             if !rule.applies_to_rust() {
@@ -434,18 +442,45 @@ fn process_file(
                         truncated_count += 1;
                     }
                     for range in ranges {
-                        let bindings = range
+                        let start_pos = Position::from_offset(src, range.start);
+                        let end_pos = Position::from_offset(src, range.end);
+                        let snippet = MatchSnippet::from_source(src, range.start, range.end);
+                        let metavariables: BTreeMap<String, MetavarBinding> = range
                             .bindings
                             .into_iter()
-                            .map(|(k, v)| (k, v.text))
+                            .map(|(k, v)| {
+                                let mv = MetavarBinding {
+                                    text: v.text,
+                                    start: Position::from_offset(src, v.start),
+                                    end: Position::from_offset(src, v.end),
+                                };
+                                (k, mv)
+                            })
                             .collect();
-                        matches.push(SastMatch {
-                            path: path.to_path_buf(),
-                            start: range.start,
-                            end: range.end,
+                        let idx = fp_counters.entry(rule.id.clone()).or_insert(0);
+                        let fingerprint =
+                            compute_fingerprint(&rule.id, &rel_path, &snippet.text, *idx);
+                        *idx += 1;
+                        let confidence = rule
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.confidence.clone())
+                            .unwrap_or(Confidence::Unknown);
+                        let metadata = rule.metadata.clone().unwrap_or_default();
+                        matches.push(match_model::SastMatch {
                             rule_id: rule.id.clone(),
-                            bindings,
-                            truncated: trunc.is_some(),
+                            ruleset_id: String::new(),
+                            message: rule.message.clone(),
+                            severity: rule.severity.clone(),
+                            confidence,
+                            path: rel_path.clone(),
+                            start: start_pos,
+                            end: end_pos,
+                            snippet,
+                            metavariables,
+                            metadata,
+                            fingerprint,
+                            fix: rule.fix.clone(),
                         });
                     }
                 }
@@ -457,17 +492,49 @@ fn process_file(
     }
 
     // 6. Regex/generic rules (all files).
-    for (rule_id, scanner) in regex_scanners {
+    for (rule, scanner) in regex_scanners {
         match scanner.scan_bytes(&content, config.max_matches_per_file) {
             Ok(regex_matches) => {
                 for m in regex_matches {
-                    matches.push(SastMatch {
-                        path: path.to_path_buf(),
-                        start: m.byte_start,
-                        end: m.byte_end,
-                        rule_id: rule_id.clone(),
-                        bindings: m.metavariables,
-                        truncated: false,
+                    let start_pos = Position::from_offset(src, m.byte_start);
+                    let end_pos = Position::from_offset(src, m.byte_end);
+                    let snippet = MatchSnippet::from_source(src, m.byte_start, m.byte_end);
+                    // Regex mode captures only text; use match start as placeholder position.
+                    let metavariables: BTreeMap<String, MetavarBinding> = m
+                        .metavariables
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let mv = MetavarBinding {
+                                text: v,
+                                start: start_pos.clone(),
+                                end: start_pos.clone(),
+                            };
+                            (k, mv)
+                        })
+                        .collect();
+                    let idx = fp_counters.entry(rule.id.clone()).or_insert(0);
+                    let fingerprint = compute_fingerprint(&rule.id, &rel_path, &snippet.text, *idx);
+                    *idx += 1;
+                    let confidence = rule
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.confidence.clone())
+                        .unwrap_or(Confidence::Unknown);
+                    let metadata = rule.metadata.clone().unwrap_or_default();
+                    matches.push(match_model::SastMatch {
+                        rule_id: rule.id.clone(),
+                        ruleset_id: String::new(),
+                        message: rule.message.clone(),
+                        severity: rule.severity.clone(),
+                        confidence,
+                        path: rel_path.clone(),
+                        start: start_pos,
+                        end: end_pos,
+                        snippet,
+                        metavariables,
+                        metadata,
+                        fingerprint,
+                        fix: rule.fix.clone(),
                     });
                 }
             }

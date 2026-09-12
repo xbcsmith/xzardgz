@@ -1,0 +1,40 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.7",
+  "version": 1,
+  "vulnerabilities": [
+    {
+      "bom-ref": "sast:rust-weak-rsa-key:deadbeef",
+      "id": "sast:rust-weak-rsa-key:deadbeef",
+      "source": {
+        "name": "xzardgz-sast"
+      },
+      "ratings": [
+        {
+          "source": {
+            "name": "xzardgz-sast"
+          },
+          "severity": "medium",
+          "method": "other"
+        }
+      ],
+      "cwes": [326],
+      "description": "RSA keys must be at least 2048 bits.",
+      "affects": [
+        {
+          "ref": "src/crypto.rs"
+        }
+      ],
+      "analysis": {
+        "state": "in_triage",
+        "detail": "RSA keys must be at least 2048 bits."
+      },
+      "properties": [
+        { "name": "xzardgz:sast:rule_id", "value": "rust-weak-rsa-key" },
+        { "name": "xzardgz:sast:line", "value": "10" },
+        { "name": "xzardgz:sast:fingerprint", "value": "deadbeef_0" },
+        { "name": "xzardgz:sast:license", "value": "Apache-2.0" }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# Write Git Primitives: Phase 1 Implementation
+#Write Git Primitives: Phase 1 Implementation
 
 ## Overview
 

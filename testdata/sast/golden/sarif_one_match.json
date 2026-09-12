@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos01/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "xzardgz-sast",
+          "version": "0.1.0",
+          "informationUri": "https://github.com/xbcsmith/xzardgz",
+          "rules": [
+            {
+              "id": "rust-weak-rsa-key",
+              "name": "rust-weak-rsa-key",
+              "shortDescription": {
+                "text": "RSA keys must be at least 2048 bits."
+              },
+              "help": {
+                "text": "RSA keys must be at least 2048 bits."
+              },
+              "properties": {
+                "tags": ["CWE-326", "security", "A02:2021"]
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "rust-weak-rsa-key",
+          "message": {
+            "text": "RSA keys must be at least 2048 bits."
+          },
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/crypto.rs",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 10,
+                  "startColumn": 5,
+                  "endLine": 10,
+                  "endColumn": 45
+                }
+              }
+            }
+          ],
+          "fingerprints": {
+            "xzardgz/v1": "deadbeef_0"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -50,8 +50,29 @@ pub async fn execute(command: AuthCommands) -> Result<()> {
 /// Returns [`crate::error::PipelineError::Auth`] when a key storage operation
 /// fails.
 pub async fn execute_with_config(command: AuthCommands, config: &Config) -> Result<()> {
-    let manager = ProviderAuthManager::from_config(config);
+    execute_inner(command, config, read_secret_from_stdin).await
+}
 
+/// Core implementation parameterised over the secret-reader function.
+///
+/// Accepting `secret_reader` as a generic `Fn` makes the `SetKey` path fully
+/// testable without blocking on stdin: tests pass `|| Ok(String::new())` and
+/// production code passes [`read_secret_from_stdin`].
+///
+/// # Arguments
+///
+/// * `command`       - The auth subcommand to run.
+/// * `config`        - Pipeline configuration.
+/// * `secret_reader` - Callable that returns the user-supplied secret string.
+///
+/// # Errors
+///
+/// Returns [`crate::error::PipelineError::Auth`] on keyring failure.
+async fn execute_inner<F>(command: AuthCommands, config: &Config, secret_reader: F) -> Result<()>
+where
+    F: Fn() -> Result<String>,
+{
+    let manager = ProviderAuthManager::from_config(config);
     match command {
         // ------------------------------------------------------------------
         // auth login <provider>
@@ -137,7 +158,7 @@ pub async fn execute_with_config(command: AuthCommands, config: &Config) -> Resu
         AuthCommands::SetKey { provider } => match provider {
             AuthProvider::Openai => {
                 println!("Enter OpenAI API key (input is not echoed):");
-                match read_secret_from_stdin() {
+                match secret_reader() {
                     Ok(key) if !key.is_empty() => {
                         manager.openai.set_key(&key)?;
                         println!("OpenAI API key stored in keyring.");
@@ -152,7 +173,7 @@ pub async fn execute_with_config(command: AuthCommands, config: &Config) -> Resu
             }
             AuthProvider::Anthropic => {
                 println!("Enter Anthropic API key (input is not echoed):");
-                match read_secret_from_stdin() {
+                match secret_reader() {
                     Ok(key) if !key.is_empty() => {
                         manager.anthropic.set_key(&key)?;
                         println!("Anthropic API key stored in keyring.");
@@ -284,11 +305,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_set_key_returns_ok() {
-        // stdin is at EOF in test runs; read_secret_from_stdin returns Ok(""),
-        // the empty-key branch prints "No key provided." and returns Ok(()).
-        let result = execute(AuthCommands::SetKey {
-            provider: AuthProvider::Openai,
-        })
+        // Use the injectable inner function so the test never blocks on stdin.
+        // The no-op reader returns Ok("") immediately, exercising the
+        // "No key provided." branch without terminal I/O.
+        let config = Config::default();
+        let result = execute_inner(
+            AuthCommands::SetKey {
+                provider: AuthProvider::Openai,
+            },
+            &config,
+            || Ok(String::new()),
+        )
         .await;
         assert!(
             result.is_ok(),
@@ -379,10 +406,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_set_key_anthropic_returns_ok() {
-        // stdin is at EOF in test runs; should print "No key provided." and return Ok.
-        let result = execute(AuthCommands::SetKey {
-            provider: AuthProvider::Anthropic,
-        })
+        // Use the injectable inner function so the test never blocks on stdin.
+        // The no-op reader returns Ok("") immediately, exercising the
+        // "No key provided." branch without terminal I/O.
+        let config = Config::default();
+        let result = execute_inner(
+            AuthCommands::SetKey {
+                provider: AuthProvider::Anthropic,
+            },
+            &config,
+            || Ok(String::new()),
+        )
         .await;
         assert!(
             result.is_ok(),
