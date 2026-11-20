@@ -79,15 +79,17 @@ impl PluginRegistry {
     /// Creates a new `PluginRegistry` with every built-in plugin registered.
     ///
     /// Registers [`TechnicalReviewPlugin`][crate::plugins::technical_review::TechnicalReviewPlugin]
-    /// under `"technical-review"` and
+    /// under `"technical-review"`,
     /// [`SecurityReviewPlugin`][crate::plugins::security_review::SecurityReviewPlugin]
-    /// under `"security-review"`. This is the registry CLI command handlers
+    /// under `"security-review"`, and
+    /// [`SastScanPlugin`][crate::plugins::sast_scan::SastScanPlugin]
+    /// under `"sast_scan"`. This is the registry CLI command handlers
     /// use; [`PluginRegistry::new`] remains an empty registry, primarily
     /// useful for tests that register their own fake plugins.
     ///
     /// # Returns
     ///
-    /// A registry with both built-in plugins registered under their
+    /// A registry with all three built-in plugins registered under their
     /// canonical names.
     ///
     /// # Examples
@@ -98,7 +100,8 @@ impl PluginRegistry {
     /// let registry = PluginRegistry::with_builtins();
     /// assert!(registry.is_registered("technical-review"));
     /// assert!(registry.is_registered("security-review"));
-    /// assert_eq!(registry.plugin_count(), 2);
+    /// assert!(registry.is_registered("sast_scan"));
+    /// assert_eq!(registry.plugin_count(), 3);
     /// ```
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
@@ -108,6 +111,7 @@ impl PluginRegistry {
         registry.register(Arc::new(
             crate::plugins::security_review::SecurityReviewPlugin,
         ));
+        registry.register(Arc::new(crate::plugins::sast_scan::SastScanPlugin));
         registry
     }
 

@@ -1,8 +1,25 @@
-//! SAST scan plugin module.
+//! SAST scan plugin.
 //!
-//! This module contains the configuration type for the SAST scan pipeline
-//! (`xzardgz sast scan`). The full plugin implementation — including
-//! `ToolExecutor` integration and `security_review` wiring — is delivered
-//! in Phase 7.
+//! This module delivers the SAST scan pipeline as a [`WorkflowPlugin`] that
+//! the pipeline runner can invoke through the plugin registry.
+//!
+//! # Submodules
+//!
+//! | Module    | Purpose                                               |
+//! |-----------|-------------------------------------------------------|
+//! | `config`  | [`SastScanConfig`] serialisable configuration struct  |
+//! | `plugin`  | [`SastScanPlugin`] workflow plugin implementation     |
+//! | `report`  | Markdown report builder                               |
+//! | `scoring` | [`SastScanResult`] implementing `ScoringInput`        |
+//!
+//! [`WorkflowPlugin`]: crate::plugins::trait_def::WorkflowPlugin
+//! [`SastScanConfig`]: config::SastScanConfig
+//! [`SastScanPlugin`]: plugin::SastScanPlugin
+//! [`SastScanResult`]: scoring::SastScanResult
 
 pub mod config;
+pub mod plugin;
+pub mod report;
+pub mod scoring;
+
+pub use plugin::SastScanPlugin;

@@ -91,7 +91,7 @@ impl Default for ToolRegistry {
 ///
 /// Only read-only file tools are registered. Write tools are excluded.
 /// The registry includes: `read_file`, `list_directory`, `search_file_contents`,
-/// `find_files_by_glob`, `read_scan_artifact`, `read_workspace_metadata`.
+/// `find_files_by_glob`, `read_scan_artifact`, `read_workspace_metadata`, `sast_scan`.
 ///
 /// # Arguments
 ///
@@ -104,6 +104,7 @@ pub fn build_read_only_registry(validator: Arc<PathValidator>) -> ToolRegistry {
     registry.register_executor(Arc::new(FindFilesByGlobTool::new(validator.clone())));
     registry.register_executor(Arc::new(ReadScanArtifactTool::new(validator.clone())));
     registry.register_executor(Arc::new(ReadWorkspaceMetadataTool::new(validator)));
+    registry.register_executor(Arc::new(crate::tools::sast_tool::SastTool));
     registry
 }
 
@@ -203,6 +204,7 @@ mod tests {
         assert!(registry.get_tool("find_files_by_glob").is_some());
         assert!(registry.get_tool("read_scan_artifact").is_some());
         assert!(registry.get_tool("read_workspace_metadata").is_some());
+        assert!(registry.get_tool("sast_scan").is_some());
     }
 
     #[test]

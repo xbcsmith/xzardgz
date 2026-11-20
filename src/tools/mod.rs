@@ -14,6 +14,7 @@ pub mod file_ops;
 pub mod git_ops;
 pub mod registry;
 pub mod sandbox;
+pub mod sast_tool;
 
 /// Result type for tool executions, containing output and an optional error message.
 #[derive(Debug, Clone)]

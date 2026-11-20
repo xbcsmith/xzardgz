@@ -764,6 +764,16 @@ fn default_sec_report_formats() -> Vec<String> {
     ]
 }
 
+/// Default SAST rulesets for the security review pre-pass.
+fn default_sast_rulesets() -> Vec<String> {
+    vec!["builtin:crypto".to_string(), "builtin:security".to_string()]
+}
+
+/// Default SAST severity threshold for the security review pre-pass.
+fn default_sast_severity_threshold() -> String {
+    "warning".to_string()
+}
+
 /// Configuration for the built-in security review plugin.
 ///
 /// Controls which checks run, how findings are thresholded, and what output
@@ -866,6 +876,30 @@ pub struct SecurityReviewConfig {
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub osv_enabled: bool,
+
+    /// Whether to run the SAST engine as a deterministic pre-pass before the AI
+    /// completion call.
+    ///
+    /// When `true`, the engine scans the workspace root with `sast_rulesets` and
+    /// folds any matches into the signal list as additional `ScoringSignal`
+    /// contributions before the AI leg runs.
+    /// Default: `false`.
+    #[serde(default)]
+    pub sast_enabled: bool,
+
+    /// Ruleset identifiers to load for the SAST pre-pass.
+    ///
+    /// Only used when `sast_enabled` is `true`. Default:
+    /// `["builtin:crypto", "builtin:security"]`.
+    #[serde(default = "default_sast_rulesets")]
+    pub sast_rulesets: Vec<String>,
+
+    /// Minimum severity threshold for SAST findings included in the signal list.
+    ///
+    /// Accepted values (case-insensitive): `"info"`, `"warning"`, `"error"`.
+    /// Only used when `sast_enabled` is `true`. Default: `"warning"`.
+    #[serde(default = "default_sast_severity_threshold")]
+    pub sast_severity_threshold: String,
 }
 
 /// Default maximum agent turns for security review.
@@ -902,6 +936,9 @@ impl Default for SecurityReviewConfig {
             investigation_threshold_bytes: None,
             investigation_batch_count: None,
             osv_enabled: default_true(),
+            sast_enabled: false,
+            sast_rulesets: default_sast_rulesets(),
+            sast_severity_threshold: default_sast_severity_threshold(),
         }
     }
 }
@@ -1630,6 +1667,34 @@ mod tests {
         assert_eq!(cfg.investigation_threshold_files, Some(30));
         assert_eq!(cfg.investigation_threshold_bytes, Some(8_000_000));
         assert_eq!(cfg.investigation_batch_count, Some(6));
+    }
+
+    #[test]
+    fn test_security_review_config_sast_enabled_defaults_to_false() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(!cfg.sast_enabled, "sast_enabled must default to false");
+    }
+
+    #[test]
+    fn test_security_review_config_sast_rulesets_defaults_to_builtin() {
+        let cfg = SecurityReviewConfig::default();
+        assert!(
+            cfg.sast_rulesets.contains(&"builtin:crypto".to_string()),
+            "sast_rulesets must include builtin:crypto by default"
+        );
+        assert!(
+            cfg.sast_rulesets.contains(&"builtin:security".to_string()),
+            "sast_rulesets must include builtin:security by default"
+        );
+    }
+
+    #[test]
+    fn test_security_review_config_sast_severity_threshold_defaults_to_warning() {
+        let cfg = SecurityReviewConfig::default();
+        assert_eq!(
+            cfg.sast_severity_threshold, "warning",
+            "sast_severity_threshold must default to 'warning'"
+        );
     }
 
     #[test]

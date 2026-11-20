@@ -1,8 +1,9 @@
 //! Configuration for the `sast_scan` plugin.
 //!
 //! [`SastScanConfig`] holds all knobs exposed to users through `config.yaml`
-//! under the `sast_scan:` key. The struct is defined here (pre-populated for
-//! Phase 6) and will be extended with AI-analysis fields in Phase 7.
+//! under the `sast_scan:` key. Both `ai_confidence_weight` and
+//! `ai_analysis_enabled` are required from this first version per
+//! `src/plugins/AGENTS.md`.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,11 +31,26 @@ fn default_report_formats() -> Vec<String> {
     vec!["json".to_string()]
 }
 
+fn default_ai_confidence_weight() -> f64 {
+    0.5
+}
+
+fn default_ai_analysis_enabled() -> bool {
+    // AI analysis is disabled by default for SAST scan; the engine is fully
+    // deterministic and does not benefit from an AI confidence leg unless
+    // the operator explicitly opts in.
+    false
+}
+
+fn default_confidence_threshold() -> f64 {
+    0.5
+}
+
 // ---------------------------------------------------------------------------
 // SastScanConfig
 // ---------------------------------------------------------------------------
 
-/// Configuration for the SAST scan pipeline and the `xzardgz sast scan`
+/// Configuration for the SAST scan plugin and the `xzardgz sast scan`
 /// CLI subcommand.
 ///
 /// Embed this under the `sast_scan:` key in `config.yaml`:
@@ -47,6 +63,9 @@ fn default_report_formats() -> Vec<String> {
 ///     - builtin:security
 ///   severity_threshold: warning
 ///   max_findings: 500
+///   ai_confidence_weight: 0.5
+///   ai_analysis_enabled: false
+///   confidence_threshold: 0.5
 ///   report_formats:
 ///     - json
 ///     - sarif
@@ -61,11 +80,14 @@ fn default_report_formats() -> Vec<String> {
 /// assert!(config.enabled);
 /// assert_eq!(config.rulesets, vec!["builtin:crypto", "builtin:security"]);
 /// assert_eq!(config.severity_threshold, "warning");
+/// assert!(!config.ai_analysis_enabled);
+/// assert!((config.ai_confidence_weight - 0.5).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SastScanConfig {
-    /// Whether the SAST scan pipeline is active. When `false`, the
-    /// `xzardgz sast scan` subcommand exits immediately with no findings.
+    /// Whether the SAST scan pipeline is active.
+    ///
+    /// When `false` the plugin returns immediately with no findings.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
@@ -73,33 +95,46 @@ pub struct SastScanConfig {
     ///
     /// Each entry is either a builtin identifier (`"builtin:crypto"`,
     /// `"builtin:security"`) or an absolute path to a directory containing
-    /// YAML rule files. Builtin identifiers always fall back to the embedded
-    /// rules when no external file matches.
+    /// YAML rule files.
     #[serde(default = "default_rulesets")]
     pub rulesets: Vec<String>,
 
     /// Minimum severity level for a finding to appear in the report.
     ///
     /// Accepted values (case-insensitive): `"info"`, `"warning"`, `"error"`.
-    /// Findings below this threshold are discarded before output projection.
     /// Default: `"warning"`.
     #[serde(default = "default_severity_threshold")]
     pub severity_threshold: String,
 
-    /// Maximum number of findings returned by a single scan.
-    ///
-    /// When this limit is reached the scan stops collecting additional
-    /// findings. Default: `500`.
+    /// Maximum number of findings returned by a single scan. Default: `500`.
     #[serde(default = "default_max_findings")]
     pub max_findings: usize,
 
     /// Output format(s) produced by the scan.
     ///
-    /// Accepted values: `"json"`, `"sarif"`, `"cyclonedx"`. Multiple formats
-    /// may be listed; each produces a separate output file when `--output` is
-    /// specified via the CLI. Default: `["json"]`.
+    /// Accepted values: `"json"`, `"sarif"`, `"cyclonedx"`. Default: `["json"]`.
     #[serde(default = "default_report_formats")]
     pub report_formats: Vec<String>,
+
+    /// Weight of the AI confidence score in the blended result (`[0.0, 1.0]`).
+    ///
+    /// At `0.0` the AI score has no effect. At `1.0` only the AI score is used.
+    /// Clamped to `[0.0, 1.0]` at blend time. Default: `0.5`.
+    #[serde(default = "default_ai_confidence_weight")]
+    pub ai_confidence_weight: f64,
+
+    /// Whether to request an AI confidence estimate for the scan result.
+    ///
+    /// When `false` (the default) the blend step is skipped entirely and
+    /// `blended_score == static_score`. No AI provider call is made.
+    #[serde(default = "default_ai_analysis_enabled")]
+    pub ai_analysis_enabled: bool,
+
+    /// Minimum blended confidence score required for the scan result to be
+    /// included in the final report. Findings that triggered an
+    /// `AbsoluteViolation` bypass this threshold. Default: `0.5`.
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
 }
 
 impl Default for SastScanConfig {
@@ -107,8 +142,8 @@ impl Default for SastScanConfig {
     ///
     /// # Returns
     ///
-    /// A `SastScanConfig` with `enabled: true`, both builtin rulesets active,
-    /// `severity_threshold: "warning"`, `max_findings: 500`, and JSON output.
+    /// A config with both builtin rulesets, `severity_threshold: "warning"`,
+    /// `max_findings: 500`, `ai_analysis_enabled: false`, and JSON output.
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
@@ -116,6 +151,9 @@ impl Default for SastScanConfig {
             severity_threshold: default_severity_threshold(),
             max_findings: default_max_findings(),
             report_formats: default_report_formats(),
+            ai_confidence_weight: default_ai_confidence_weight(),
+            ai_analysis_enabled: default_ai_analysis_enabled(),
+            confidence_threshold: default_confidence_threshold(),
         }
     }
 }
@@ -135,19 +173,19 @@ mod tests {
 
     #[test]
     fn test_sast_scan_config_default_rulesets_contains_builtin_crypto() {
-        let config = SastScanConfig::default();
         assert!(
-            config.rulesets.contains(&"builtin:crypto".to_string()),
-            "default rulesets must include builtin:crypto"
+            SastScanConfig::default()
+                .rulesets
+                .contains(&"builtin:crypto".to_string())
         );
     }
 
     #[test]
     fn test_sast_scan_config_default_rulesets_contains_builtin_security() {
-        let config = SastScanConfig::default();
         assert!(
-            config.rulesets.contains(&"builtin:security".to_string()),
-            "default rulesets must include builtin:security"
+            SastScanConfig::default()
+                .rulesets
+                .contains(&"builtin:security".to_string())
         );
     }
 
@@ -163,15 +201,32 @@ mod tests {
 
     #[test]
     fn test_sast_scan_config_default_report_formats_contains_json() {
-        let config = SastScanConfig::default();
         assert!(
-            config.report_formats.contains(&"json".to_string()),
-            "default report_formats must include json"
+            SastScanConfig::default()
+                .report_formats
+                .contains(&"json".to_string())
         );
     }
 
     #[test]
-    fn test_sast_scan_config_serialization_roundtrip_preserves_defaults() {
+    fn test_sast_scan_config_default_ai_confidence_weight_is_half() {
+        let cfg = SastScanConfig::default();
+        assert!((cfg.ai_confidence_weight - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_sast_scan_config_default_ai_analysis_enabled_is_false() {
+        assert!(!SastScanConfig::default().ai_analysis_enabled);
+    }
+
+    #[test]
+    fn test_sast_scan_config_default_confidence_threshold_is_half() {
+        let cfg = SastScanConfig::default();
+        assert!((cfg.confidence_threshold - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_sast_scan_config_serialization_roundtrip_preserves_all_fields() {
         let original = SastScanConfig::default();
         let yaml = serde_yaml::to_string(&original).expect("serialization must succeed");
         let restored: SastScanConfig =
@@ -181,6 +236,13 @@ mod tests {
         assert_eq!(original.severity_threshold, restored.severity_threshold);
         assert_eq!(original.max_findings, restored.max_findings);
         assert_eq!(original.report_formats, restored.report_formats);
+        assert!(
+            (original.ai_confidence_weight - restored.ai_confidence_weight).abs() < f64::EPSILON
+        );
+        assert_eq!(original.ai_analysis_enabled, restored.ai_analysis_enabled);
+        assert!(
+            (original.confidence_threshold - restored.confidence_threshold).abs() < f64::EPSILON
+        );
     }
 
     #[test]
@@ -191,5 +253,6 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.severity_threshold, "warning");
         assert_eq!(config.max_findings, 500);
+        assert!(!config.ai_analysis_enabled);
     }
 }

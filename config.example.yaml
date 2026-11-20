@@ -111,6 +111,9 @@ sast_scan:
     - builtin:security
   severity_threshold: warning
   max_findings: 500
+  ai_confidence_weight: 0.5
+  ai_analysis_enabled: false
+  confidence_threshold: 0.5
   report_formats:
     - json
     - sarif
@@ -172,6 +175,13 @@ security_review:
     - "markdown"
     - "json"
     - "sarif"
+  # SAST pre-pass: runs the deterministic SAST engine before the AI call.
+  # Disabled by default; enable once the SAST engine is configured.
+  sast_enabled: false
+  sast_rulesets:
+    - builtin:crypto
+    - builtin:security
+  sast_severity_threshold: warning
 
 # ---------------------------------------------------------------------------
 # Governance

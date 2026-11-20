@@ -191,6 +191,55 @@ result.has_violations() || result.blended_score >= confidence_threshold
 Findings that triggered an `AbsoluteViolation` satisfy `has_violations()` and
 bypass the threshold check entirely.
 
+### sast_scan
+
+Source: `src/plugins/sast_scan/scoring.rs`
+
+`review_violations` mode: `false`. An `AbsoluteViolation` always floors the
+static score to `0.0` for this plugin.
+
+**Signals emitted per match (one per `SastMatch`)**
+
+Signals are evaluated in the order listed. The `AbsoluteViolation` check runs
+first; a match that triggers it does not emit any `Positive` or `Negative`
+signal.
+
+| Signal variant      | Label / Reason                            | Weight            | Condition                                                                    |
+| ------------------- | ----------------------------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| `AbsoluteViolation` | `"SAST [{rule_id}]: {cwes}"`              | (floors to `0.0`) | Match metadata contains CWE-326, CWE-327, or CWE-328 AND `severity == Error` |
+| `Positive`          | `"high-confidence sast match: {rule_id}"` | `0.3`             | `confidence == High` AND match did NOT trigger `AbsoluteViolation`           |
+| `Negative`          | `"low-confidence sast match: {rule_id}"`  | `0.2`             | `confidence == Low`                                                          |
+
+Matches with `confidence == Medium` or `confidence == Unknown` emit no signal
+and receive only the starting score of `1.0` before blend.
+
+**SastScanConfig fields used for scoring**
+
+| Field                  | Type   | Default |
+| ---------------------- | ------ | ------- |
+| `confidence_threshold` | `f64`  | `0.5`   |
+| `ai_confidence_weight` | `f64`  | `0.5`   |
+| `ai_analysis_enabled`  | `bool` | `false` |
+
+**Filter logic**
+
+A finding is included in the report when:
+
+```text
+result.has_violations() || result.blended_score >= confidence_threshold
+```
+
+Findings that triggered an `AbsoluteViolation` satisfy `has_violations()` and
+bypass the threshold check entirely.
+
+**Security review SAST pre-pass**
+
+When `SecurityReviewConfig::sast_enabled` is `true`, the `security_review`
+plugin runs the SAST engine before the AI completion call. SAST signals derived
+from matching rules against the workspace are folded into the signal list
+alongside OSV dependency signals. The same `AbsoluteViolation`, `Positive`, and
+`Negative` rules listed above apply during the pre-pass.
+
 ## JSON Report Audit Fields
 
 Source: `src/reports/findings.rs` (`PluginFinding`)

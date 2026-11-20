@@ -90,6 +90,19 @@ pub fn validate_security_review_config(config: &SecurityReviewConfig) -> Result<
         }
     }
 
+    // Validate sast_severity_threshold (only when sast_enabled).
+    if config.sast_enabled {
+        const VALID_SAST_THRESHOLDS: &[&str] = &["info", "warning", "error"];
+        let sast_lower = config.sast_severity_threshold.to_lowercase();
+        if !VALID_SAST_THRESHOLDS.contains(&sast_lower.as_str()) {
+            return Err(PipelineError::Plugin(format!(
+                "security-review: invalid sast_severity_threshold '{}'; must be one of: {}",
+                config.sast_severity_threshold,
+                VALID_SAST_THRESHOLDS.join(", ")
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -313,5 +326,44 @@ mod tests {
         };
         let err = validate_security_review_config(&cfg).unwrap_err();
         assert!(err.to_string().contains("html"));
+    }
+
+    // ------------------------------------------------------------------
+    // validate_security_review_config - sast_severity_threshold
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_security_review_config_with_valid_sast_threshold_returns_ok() {
+        let cfg = SecurityReviewConfig {
+            sast_enabled: true,
+            sast_severity_threshold: "warning".to_string(),
+            ..SecurityReviewConfig::default()
+        };
+        assert!(validate_security_review_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_validate_security_review_config_with_invalid_sast_threshold_returns_plugin_error() {
+        let cfg = SecurityReviewConfig {
+            sast_enabled: true,
+            sast_severity_threshold: "critical".to_string(),
+            ..SecurityReviewConfig::default()
+        };
+        let result = validate_security_review_config(&cfg);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PipelineError::Plugin(_)));
+    }
+
+    #[test]
+    fn test_validate_security_review_config_sast_threshold_only_validated_when_enabled() {
+        let cfg = SecurityReviewConfig {
+            sast_enabled: false,
+            sast_severity_threshold: "critical".to_string(),
+            ..SecurityReviewConfig::default()
+        };
+        assert!(
+            validate_security_review_config(&cfg).is_ok(),
+            "sast_severity_threshold must not be validated when sast_enabled is false"
+        );
     }
 }
