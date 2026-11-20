@@ -85,6 +85,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: SastCommands,
     },
+
+    /// Manage SAST ruleset sources: sync, list, validate.
+    Ruleset {
+        /// Ruleset management subcommand to execute.
+        #[command(subcommand)]
+        command: RulesetCommands,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +544,73 @@ pub struct SastScanArgs {
     /// Minimum severity threshold: info, warning, or error.
     #[arg(long, default_value = "warning")]
     pub severity: String,
+}
+
+// ---------------------------------------------------------------------------
+// ruleset
+// ---------------------------------------------------------------------------
+
+/// Subcommands for the `ruleset` command group.
+///
+/// Provides lifecycle management for external SAST ruleset sources: listing,
+/// syncing, health-checking, and assessing individual sources.
+#[derive(Debug, Clone, Subcommand)]
+pub enum RulesetCommands {
+    /// List all resolved rulesets with their id, rule count, licence class, and source.
+    List(RulesetListArgs),
+    /// Fetch enabled sources, pin commits, verify licences, and write BundleManifest.
+    Sync(RulesetSyncArgs),
+    /// Validate without scanning: check for unreachable URLs, missing branches,
+    /// and licence divergence.
+    Doctor(RulesetDoctorArgs),
+    /// Fetch a source, run the Phase 1 parser, and report the supported/gated split.
+    Assess(RulesetAssessArgs),
+}
+
+/// Arguments for `ruleset list`.
+///
+/// Lists all sources in the manifest with their enabled state, licence, and URL.
+#[derive(Debug, Clone, Args)]
+pub struct RulesetListArgs {
+    /// Path to the sources.yaml manifest to read (default: searches config paths).
+    #[arg(long, value_name = "FILE")]
+    pub sources_file: Option<std::path::PathBuf>,
+}
+
+/// Arguments for `ruleset sync`.
+///
+/// Syncs one or all enabled ruleset sources from the manifest.
+#[derive(Debug, Clone, Args)]
+pub struct RulesetSyncArgs {
+    /// Specific source ID to sync. When omitted all enabled sources are synced.
+    pub source: Option<String>,
+    /// Path to the sources.yaml manifest to read.
+    #[arg(long, value_name = "FILE")]
+    pub sources_file: Option<std::path::PathBuf>,
+}
+
+/// Arguments for `ruleset doctor`.
+///
+/// Validates each source in the manifest for reachability, non-empty branches,
+/// and licence consistency without performing any network operations.
+#[derive(Debug, Clone, Args)]
+pub struct RulesetDoctorArgs {
+    /// Path to the sources.yaml manifest to validate.
+    #[arg(long, value_name = "FILE")]
+    pub sources_file: Option<std::path::PathBuf>,
+}
+
+/// Arguments for `ruleset assess`.
+///
+/// Fetches a single source, parses its rules, and reports the
+/// supported/gated rule split.
+#[derive(Debug, Clone, Args)]
+pub struct RulesetAssessArgs {
+    /// Source ID to assess.
+    pub source: String,
+    /// Path to the sources.yaml manifest to read.
+    #[arg(long, value_name = "FILE")]
+    pub sources_file: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -1260,5 +1334,102 @@ mod tests {
             result.is_err(),
             "missing subcommand should produce an error"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ruleset subcommand
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ruleset_list_parses_correctly() {
+        let cli = parse(&["xzardgz", "ruleset", "list"]).unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => {
+                assert!(matches!(command, RulesetCommands::List(_)));
+            }
+            _ => panic!("expected Ruleset command"),
+        }
+    }
+
+    #[test]
+    fn test_ruleset_sync_parses_correctly_with_no_source() {
+        let cli = parse(&["xzardgz", "ruleset", "sync"]).unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => match command {
+                RulesetCommands::Sync(args) => {
+                    assert!(
+                        args.source.is_none(),
+                        "source must be None when not provided"
+                    );
+                    assert!(args.sources_file.is_none());
+                }
+                _ => panic!("expected Sync subcommand"),
+            },
+            _ => panic!("expected Ruleset command"),
+        }
+    }
+
+    #[test]
+    fn test_ruleset_sync_parses_correctly_with_source_id() {
+        let cli = parse(&["xzardgz", "ruleset", "sync", "trailofbits"]).unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => match command {
+                RulesetCommands::Sync(args) => {
+                    assert_eq!(args.source.as_deref(), Some("trailofbits"));
+                }
+                _ => panic!("expected Sync subcommand"),
+            },
+            _ => panic!("expected Ruleset command"),
+        }
+    }
+
+    #[test]
+    fn test_ruleset_doctor_parses_correctly() {
+        let cli = parse(&["xzardgz", "ruleset", "doctor"]).unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => {
+                assert!(matches!(command, RulesetCommands::Doctor(_)));
+            }
+            _ => panic!("expected Ruleset command"),
+        }
+    }
+
+    #[test]
+    fn test_ruleset_assess_parses_correctly() {
+        let cli = parse(&["xzardgz", "ruleset", "assess", "hashicorp"]).unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => match command {
+                RulesetCommands::Assess(args) => {
+                    assert_eq!(args.source, "hashicorp");
+                    assert!(args.sources_file.is_none());
+                }
+                _ => panic!("expected Assess subcommand"),
+            },
+            _ => panic!("expected Ruleset command"),
+        }
+    }
+
+    #[test]
+    fn test_ruleset_sync_sources_file_flag_parses_correctly() {
+        let cli = parse(&[
+            "xzardgz",
+            "ruleset",
+            "sync",
+            "--sources-file",
+            "/tmp/my_sources.yaml",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Ruleset { command } => match command {
+                RulesetCommands::Sync(args) => {
+                    assert_eq!(
+                        args.sources_file.as_deref(),
+                        Some(std::path::Path::new("/tmp/my_sources.yaml"))
+                    );
+                }
+                _ => panic!("expected Sync subcommand"),
+            },
+            _ => panic!("expected Ruleset command"),
+        }
     }
 }

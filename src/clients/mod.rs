@@ -17,6 +17,7 @@
 
 pub mod github;
 pub mod repodata;
+pub mod rulesets;
 pub mod scorecard;
 pub mod vuln;
 

@@ -1,0 +1,126 @@
+# SAST ruleset sources manifest for xzardgz.
+#
+# This file lists known public SAST rule repositories.
+# All sources are disabled by default.
+# Review each source's licence before enabling it.
+#
+# To enable a source:
+#   1. Set enabled: true
+#   2. Run: xzardgz ruleset sync <source-id>
+#   3. Verify: xzardgz ruleset doctor
+#
+# Licence classes and default policy:
+#   ALLOWED: Permissive (MIT, Apache-2.0, BSD-*), WeakCopyleft (LGPL, MPL)
+#   DENIED:  StrongCopyleft (GPL), NetworkCopyleft (AGPL), NonCommercial, Restricted, Unknown
+
+"0xdea":
+  description: "Security-focused Semgrep rules for multiple vulnerability classes"
+  repository_url: "https://github.com/0xdea/semgrep-rules"
+  repository_branch: "main"
+  author: "0xdea"
+  license: "MIT"
+  enabled: false
+
+trailofbits:
+  description: "Trail of Bits security audit Semgrep rules"
+  repository_url: "https://github.com/trailofbits/semgrep-rules"
+  repository_branch: "main"
+  author: "Trail of Bits"
+  license: "AGPL-3.0"
+  enabled: false
+
+elttam:
+  description: "elttam security rules collection"
+  repository_url: "https://github.com/elttam/semgrep-rules"
+  repository_branch: "main"
+  author: "elttam"
+  license: "MIT"
+  enabled: false
+
+hashicorp:
+  description: "HashiCorp infrastructure security rules"
+  repository_url: "https://github.com/hashicorp/semgrep-rules"
+  repository_branch: "main"
+  author: "HashiCorp"
+  license: "MPL-2.0"
+  enabled: false
+
+we45:
+  description: "we45 application security rules"
+  repository_url: "https://github.com/we45/semgrep-rules"
+  repository_branch: "master"
+  author: "we45"
+  license: "MIT"
+  enabled: false
+
+salesforce:
+  description: "Salesforce code security rules"
+  repository_url: "https://github.com/salesforce/sfdx-scanner"
+  repository_branch: "main"
+  author: "Salesforce"
+  license: "BSD-3-Clause"
+  enabled: false
+
+mercateo:
+  description: "Java and JVM security rules"
+  repository_url: "https://github.com/Mercateo/semgrep-rules-java"
+  repository_branch: "main"
+  author: "Mercateo"
+  license: "MIT"
+  enabled: false
+
+getsentry:
+  description: "Sentry application security rules"
+  repository_url: "https://github.com/getsentry/sast-rules"
+  repository_branch: "main"
+  author: "Sentry"
+  license: "Apache-2.0"
+  enabled: false
+
+clintgibler:
+  description: "Curated security rules collection"
+  repository_url: "https://github.com/clintgibler/semgrep-rules"
+  repository_branch: "main"
+  author: "Clint Gibler"
+  license: "MIT"
+  enabled: false
+
+dgryski:
+  description: "Go standard library security rules"
+  repository_url: "https://github.com/dgryski/semgrep-go-stdlib"
+  repository_branch: "main"
+  author: "Damian Gryski"
+  license: "MIT"
+  enabled: false
+
+mindedsecurity:
+  description: "Mobile and Android security rules"
+  repository_url: "https://github.com/mindedsecurity/semgrep-rules-android-security"
+  repository_branch: "main"
+  author: "Minded Security"
+  license: "MIT"
+  enabled: false
+
+nightwatchcyber:
+  description: "Nightwatch Cybersecurity rules for mobile apps"
+  repository_url: "https://github.com/nightwatchcybersecurity/truegaze"
+  repository_branch: "master"
+  author: "Nightwatch Cybersecurity"
+  license: "Apache-2.0"
+  enabled: false
+
+microsoft:
+  description: "Microsoft security research rules"
+  repository_url: "https://github.com/microsoft/msrc-security-research"
+  repository_branch: "main"
+  author: "Microsoft Security"
+  license: "MIT"
+  enabled: false
+
+godaistudios:
+  description: "AI and cloud security rules"
+  repository_url: "https://github.com/godai-studios/semgrep-rules"
+  repository_branch: "main"
+  author: "Godai Studios"
+  license: "MIT"
+  enabled: false

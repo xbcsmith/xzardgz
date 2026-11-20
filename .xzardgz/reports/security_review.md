@@ -1,10 +1,10 @@
 # Security Review Report
 
-Generated at: 2026-11-20T18:52:32Z
+Generated at: 2026-11-20T20:35:01Z
 
 Repository: repo
 
-Workspace: 01M7X4V70B27N9WWFQECS8JSQX
+Workspace: 01M7XAPVHWTX476NTHECZWR5SC
 
 Risk band: CRITICAL
 

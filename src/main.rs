@@ -17,5 +17,6 @@ async fn main() -> Result<(), XzardgzError> {
         Commands::Prompts { command } => commands::prompts::execute(command).await,
         Commands::Mcp { command } => commands::mcp::execute(command).await,
         Commands::Sast { command } => commands::sast::execute(command).await,
+        Commands::Ruleset { command } => commands::ruleset::execute(command).await,
     }
 }

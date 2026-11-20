@@ -378,6 +378,68 @@ pub fn resolve_rules(config: &ResolveConfig) -> Result<Vec<NamespacedRule>, Sast
 }
 
 // ---------------------------------------------------------------------------
+// load_cached_ruleset
+// ---------------------------------------------------------------------------
+
+/// Load rules from a cached ruleset directory installed by `xzardgz ruleset sync`.
+///
+/// Looks up the bundle manifest in the cache at
+/// `<cache_root>/<source_id>/<commit>/bundle_manifest.yaml`, verifies that
+/// the manifest's `allowed_by_policy` flag is set, then delegates to
+/// [`load_rules_from_dir`] to load and namespace the YAML rule files.
+///
+/// # Arguments
+///
+/// * `source_id` - The source identifier as it appears in the sources manifest.
+/// * `commit` - The commit SHA the cache entry was created for.
+///
+/// # Returns
+///
+/// An empty [`Vec`] with a [`tracing::warn!`] if no cache entry exists, or if
+/// the manifest's `allowed_by_policy` is `false`.
+///
+/// # Errors
+///
+/// Returns [`SastError::RuleRead`] if a found YAML file cannot be read from
+/// the cache directory.
+pub fn load_cached_ruleset(
+    source_id: &str,
+    commit: &str,
+) -> Result<Vec<NamespacedRule>, SastError> {
+    if !crate::clients::rulesets::cache::is_cached(source_id, commit) {
+        warn!(
+            source_id = %source_id,
+            commit = %commit,
+            "no cached ruleset found; returning empty rule set"
+        );
+        return Ok(Vec::new());
+    }
+
+    match crate::clients::rulesets::cache::read_cached_manifest(source_id, commit) {
+        None => {
+            warn!(
+                source_id = %source_id,
+                commit = %commit,
+                "cached bundle manifest is unreadable; returning empty rule set"
+            );
+            Ok(Vec::new())
+        }
+        Some(manifest) if !manifest.allowed_by_policy => {
+            warn!(
+                source_id = %source_id,
+                commit = %commit,
+                "cached ruleset is not allowed by policy; returning empty rule set"
+            );
+            Ok(Vec::new())
+        }
+        Some(_manifest) => {
+            let cache_dir = crate::clients::rulesets::cache::cache_path_for(source_id, commit);
+            load_rules_from_dir(&cache_dir, source_id)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -572,6 +634,24 @@ mod tests {
         assert!(
             result.is_ok(),
             "resolve_rules must not fail for a missing cli_ruleset_path: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // load_cached_ruleset
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_cached_ruleset_with_no_cache_returns_empty() {
+        // A commit SHA that is astronomically unlikely to exist in the system cache.
+        let result = load_cached_ruleset("test-source", "0000000000000000000000000000000000000000");
+        assert!(
+            result.is_ok(),
+            "load_cached_ruleset must return Ok when no cache is present"
+        );
+        assert!(
+            result.unwrap().is_empty(),
+            "load_cached_ruleset must return an empty vec when no cache is present"
         );
     }
 }

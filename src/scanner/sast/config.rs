@@ -64,6 +64,7 @@ fn default_max_matches_per_file() -> usize {
 /// assert_eq!(config.rule_timeout_ms, 5_000);
 /// assert_eq!(config.max_matches_per_file, 100);
 /// assert_eq!(config.jobs, 0);
+/// assert!(config.ruleset_sources_file.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SastEngineConfig {
@@ -97,6 +98,14 @@ pub struct SastEngineConfig {
     /// at runtime.  Default: 0.
     #[serde(default)]
     pub jobs: usize,
+
+    /// Optional path to a user-maintained `sources.yaml` manifest.
+    ///
+    /// When set, `xzardgz ruleset sync` reads from and writes to this file.
+    /// When `None`, the user-config directory (`~/.config/xzardgz/sources.yaml`)
+    /// is used as the default location.
+    #[serde(default)]
+    pub ruleset_sources_file: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +128,7 @@ impl Default for SastEngineConfig {
             rule_timeout_ms: DEFAULT_RULE_TIMEOUT_MS,
             max_matches_per_file: DEFAULT_MAX_MATCHES_PER_FILE,
             jobs: 0,
+            ruleset_sources_file: None,
         }
     }
 }
@@ -184,6 +194,12 @@ mod tests {
     }
 
     #[test]
+    fn test_sast_engine_config_default_ruleset_sources_file_is_none() {
+        let config = SastEngineConfig::default();
+        assert!(config.ruleset_sources_file.is_none());
+    }
+
+    #[test]
     fn test_sast_engine_config_new_equals_default() {
         let via_new = SastEngineConfig::new();
         let via_default = SastEngineConfig::default();
@@ -194,6 +210,10 @@ mod tests {
             via_default.max_matches_per_file
         );
         assert_eq!(via_new.jobs, via_default.jobs);
+        assert_eq!(
+            via_new.ruleset_sources_file,
+            via_default.ruleset_sources_file
+        );
     }
 
     #[test]
@@ -207,6 +227,7 @@ mod tests {
         assert_eq!(original.rule_timeout_ms, restored.rule_timeout_ms);
         assert_eq!(original.max_matches_per_file, restored.max_matches_per_file);
         assert_eq!(original.jobs, restored.jobs);
+        assert_eq!(original.ruleset_sources_file, restored.ruleset_sources_file);
     }
 
     #[test]
@@ -216,6 +237,7 @@ mod tests {
         original.rule_timeout_ms = 1_500;
         original.max_matches_per_file = 50;
         original.jobs = 4;
+        original.ruleset_sources_file = Some(std::path::PathBuf::from("/tmp/sources.yaml"));
 
         let yaml = serde_yaml::to_string(&original)
             .expect("serialization must succeed for a valid config");
@@ -226,6 +248,10 @@ mod tests {
         assert_eq!(restored.rule_timeout_ms, 1_500);
         assert_eq!(restored.max_matches_per_file, 50);
         assert_eq!(restored.jobs, 4);
+        assert_eq!(
+            restored.ruleset_sources_file,
+            Some(std::path::PathBuf::from("/tmp/sources.yaml"))
+        );
     }
 
     #[test]

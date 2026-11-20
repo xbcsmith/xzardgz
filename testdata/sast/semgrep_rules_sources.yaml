@@ -1,0 +1,43 @@
+# Reference semgrep-rules-manager v1 manifest for xzardgz tests.
+# This file is checked in for offline testing and must not be modified
+# without updating the corresponding round-trip tests.
+
+"0xdea":
+  description: "Security-focused Semgrep rules"
+  repository_url: "https://github.com/0xdea/semgrep-rules"
+  repository_branch: "main"
+  author: "0xdea"
+  license: "MIT"
+  enabled: false
+
+trailofbits:
+  description: "Trail of Bits security audit rules"
+  repository_url: "https://github.com/trailofbits/semgrep-rules"
+  repository_branch: "main"
+  author: "Trail of Bits"
+  license: "AGPL-3.0"
+  enabled: false
+
+hashicorp:
+  description: "HashiCorp infrastructure-as-code security rules"
+  repository_url: "https://github.com/hashicorp/semgrep-rules"
+  repository_branch: "main"
+  author: "HashiCorp"
+  license: "MPL-2.0"
+  enabled: false
+
+custom-nonccommercial:
+  description: "Rules with non-commercial licence"
+  repository_url: "https://github.com/example/nc-rules"
+  repository_branch: "main"
+  author: "Example Author"
+  license: "CC-BY-NC-4.0"
+  enabled: false
+
+custom-permissive-enabled:
+  description: "An enabled permissive-licence source for integration tests"
+  repository_url: "https://github.com/example/permissive-rules"
+  repository_branch: "main"
+  author: "Example Author"
+  license: "Apache-2.0"
+  enabled: true

@@ -98,6 +98,9 @@ sast:
   rule_timeout_ms: 5000
   max_matches_per_file: 100
   jobs: 0
+  # Optional path to a sources.yaml manifest for external ruleset management.
+  # Leave unset to use the default: ~/.config/xzardgz/sources.yaml
+  # ruleset_sources_file: ~/.config/xzardgz/sources.yaml
 
 # ---------------------------------------------------------------------------
 # SAST scan configuration

@@ -6,6 +6,8 @@ pub mod mcp;
 pub mod plugin;
 /// Prompt management command handler.
 pub mod prompts;
+/// Ruleset source management command handler.
+pub mod ruleset;
 /// Workflow execution command handler.
 pub mod run;
 /// SAST security scan command handler.
