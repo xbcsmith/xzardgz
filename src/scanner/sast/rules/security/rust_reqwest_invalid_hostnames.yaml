@@ -1,0 +1,26 @@
+rules:
+  - id: rust-reqwest-invalid-hostnames
+    message: >
+      TLS hostname verification is disabled via danger_accept_invalid_hostnames(true)
+      (CWE-297). An attacker possessing any trusted certificate can impersonate
+      the target host. Remove this flag and ensure the server presents a
+      certificate whose Subject Alternative Name matches the target hostname.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-297
+        - CWE-295
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - reqwest
+    pattern-either:
+      - pattern: $BUILDER.danger_accept_invalid_hostnames(true)
+      - pattern: ClientBuilder::new().danger_accept_invalid_hostnames(true)
+      - pattern: reqwest::ClientBuilder::new().danger_accept_invalid_hostnames(true)

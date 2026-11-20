@@ -1,0 +1,28 @@
+rules:
+  - id: rust-sha1-hmac
+    message: >
+      HMAC-SHA1 uses SHA-1 as its underlying hash, which has known collision
+      weaknesses (CWE-327, CWE-328). Although HMAC-SHA1 is more robust than
+      bare SHA-1 for some use cases, prefer HMAC-SHA256 (hmac + sha2 crates)
+      or HMAC-SHA3-256 for new code.
+    languages:
+      - rust
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-327
+        - CWE-328
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - hmac
+        - sha1
+    pattern-either:
+      - pattern: Hmac::<Sha1>::new_from_slice($KEY)
+      - pattern: HmacSha1::new_from_slice($KEY)
+      - pattern: HmacSha1::new($KEY)
+      - pattern: hmac::Hmac::<sha1::Sha1>::new_from_slice($KEY)

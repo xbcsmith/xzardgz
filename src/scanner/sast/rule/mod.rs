@@ -12,6 +12,7 @@ pub mod compat;
 pub mod ir;
 pub mod metadata;
 pub mod parse;
+pub mod resolve;
 pub mod schema;
 
 pub use ir::{CompileOutcome, Condition, Formula, Leaf, MetavarId, RuleIr};

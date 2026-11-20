@@ -1,0 +1,30 @@
+rules:
+  - id: rust-shell-command-injection
+    message: >
+      A shell interpreter (sh, bash, zsh, or cmd) is being invoked via
+      Command::new (CWE-78, CWE-88). If any argument passed to the shell
+      incorporates user-controlled data, this enables arbitrary command
+      execution. Invoke the target binary directly with Command::new and
+      pass each argument as a separate item rather than constructing a
+      shell command string.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-78
+        - CWE-88
+      owasp:
+        - "A03:2021 - Injection"
+      confidence: MEDIUM
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+    pattern-either:
+      - pattern: Command::new("sh")
+      - pattern: Command::new("bash")
+      - pattern: Command::new("zsh")
+      - pattern: Command::new("cmd")
+      - pattern: std::process::Command::new("sh")
+      - pattern: std::process::Command::new("bash")

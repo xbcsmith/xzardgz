@@ -1,0 +1,25 @@
+rules:
+  - id: rust-reqwest-invalid-certs
+    message: >
+      TLS certificate verification is disabled via danger_accept_invalid_certs(true)
+      (CWE-295). Without certificate verification, man-in-the-middle attackers
+      can intercept and modify all HTTPS traffic silently. Remove this call
+      and ensure a valid certificate chain is configured for the target server.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-295
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - reqwest
+    pattern-either:
+      - pattern: $BUILDER.danger_accept_invalid_certs(true)
+      - pattern: ClientBuilder::new().danger_accept_invalid_certs(true)
+      - pattern: reqwest::ClientBuilder::new().danger_accept_invalid_certs(true)

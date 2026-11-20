@@ -1,0 +1,28 @@
+rules:
+  - id: rust-pbkdf2-low-rounds
+    message: >
+      A PBKDF2 call with fewer than 100,000 iterations does not provide
+      sufficient resistance to offline brute-force attacks against stolen
+      hashes (CWE-916). OWASP recommends at least 600,000 iterations of
+      PBKDF2-HMAC-SHA256 for password storage. Increase the iteration count.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-916
+        - CWE-326
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - pbkdf2
+    patterns:
+      - pattern: pbkdf2::pbkdf2_hmac::<$H>($PASS, $SALT, $ROUNDS, $OUT)
+      - metavariable-comparison:
+          metavariable: $ROUNDS
+          comparison: $ROUNDS < 100000
+      - focus-metavariable: $ROUNDS

@@ -1,0 +1,21 @@
+rules:
+  - id: rust-hardcoded-salt
+    message: >
+      A variable named salt or password_salt is assigned a fixed byte array
+      literal (CWE-760). A hardcoded salt defeats the purpose of salting:
+      all users share the same salt, allowing precomputed rainbow-table attacks
+      against the entire credential store. Generate a unique random salt per
+      credential using OsRng.
+    languages:
+      - regex
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-760
+        - CWE-330
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      category: security
+      license: Apache-2.0
+    pattern-regex: '(?i)\b(?:let\s+(?:mut\s+)?|const\s+)(?P<NAME>salt|password_salt|hash_salt|pwd_salt)\s*(?::\s*\[[^\]]*\])?\s*=\s*\['

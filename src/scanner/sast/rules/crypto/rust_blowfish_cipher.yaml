@@ -1,0 +1,26 @@
+rules:
+  - id: rust-blowfish-cipher
+    message: >
+      Blowfish has a 64-bit block size that makes it vulnerable to birthday
+      attacks (SWEET32, CWE-327). Its small block size allows ciphertext
+      collisions after roughly 4 GB of data encrypted under the same key.
+      Use AES-256-GCM or ChaCha20-Poly1305 instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - blowfish
+    pattern-either:
+      - pattern: Blowfish::new_from_slice($KEY)
+      - pattern: blowfish::Blowfish::new_from_slice($KEY)
+      - pattern: BlowfishCbc::new($KEY, $IV)
+      - pattern: Blowfish::bc_init_state()

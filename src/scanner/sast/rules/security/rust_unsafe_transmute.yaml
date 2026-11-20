@@ -1,0 +1,28 @@
+rules:
+  - id: rust-unsafe-transmute
+    message: >
+      std::mem::transmute reinterprets a value's bytes as a completely different
+      type with no safety checks (CWE-704, CWE-119). Incorrect use produces
+      undefined behaviour, memory corruption, and exploitable vulnerabilities.
+      Use safe alternatives such as From/Into trait conversions, TryFrom/TryInto,
+      or bytemuck::cast where the target type implements Pod.
+    languages:
+      - rust
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-704
+        - CWE-119
+      owasp:
+        - "A06:2021 - Vulnerable and Outdated Components"
+      confidence: MEDIUM
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+    pattern-either:
+      - pattern: std::mem::transmute::<$A, $B>($X)
+      - pattern: mem::transmute::<$A, $B>($X)
+      - pattern: transmute::<$A, $B>($X)
+      - pattern: std::mem::transmute($X)
+      - pattern: mem::transmute($X)

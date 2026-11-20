@@ -49,6 +49,12 @@ pub struct Config {
     /// Repository scanner configuration.
     #[serde(default)]
     pub scanner: ScannerConfig,
+    /// SAST engine configuration (scanning behaviour knobs).
+    #[serde(default)]
+    pub sast: crate::scanner::sast::config::SastEngineConfig,
+    /// SAST scan pipeline configuration (rulesets, thresholds, formats).
+    #[serde(default)]
+    pub sast_scan: crate::plugins::sast_scan::config::SastScanConfig,
     /// Git operation configuration.
     #[serde(default)]
     pub git: GitConfig,
@@ -1642,5 +1648,27 @@ mod tests {
     fn test_config_pr_field_defaults_to_disabled() {
         let config = Config::default();
         assert!(!config.pr.enabled, "PR must be disabled in default Config");
+    }
+
+    #[test]
+    fn test_config_sast_field_has_correct_default_max_file_bytes() {
+        assert_eq!(
+            Config::default().sast.max_file_bytes,
+            5_242_880,
+            "sast.max_file_bytes must default to 5 MiB"
+        );
+    }
+
+    #[test]
+    fn test_config_sast_scan_field_has_correct_default_rulesets() {
+        let rulesets = Config::default().sast_scan.rulesets;
+        assert!(
+            rulesets.contains(&"builtin:crypto".to_string()),
+            "sast_scan.rulesets must include builtin:crypto"
+        );
+        assert!(
+            rulesets.contains(&"builtin:security".to_string()),
+            "sast_scan.rulesets must include builtin:security"
+        );
     }
 }

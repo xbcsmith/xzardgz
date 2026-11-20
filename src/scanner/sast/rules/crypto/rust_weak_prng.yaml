@@ -1,0 +1,29 @@
+rules:
+  - id: rust-weak-prng
+    message: >
+      SmallRng is a non-cryptographic PRNG with a small state and predictable
+      output (CWE-338). It must never be used for session tokens, nonces,
+      key material, or other security-sensitive values. Use rand::rngs::OsRng
+      or rand_chacha::ChaCha20Rng seeded from OsRng instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-338
+        - CWE-330
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - rand
+    pattern-either:
+      - pattern: SmallRng::seed_from_u64($SEED)
+      - pattern: SmallRng::from_seed($SEED)
+      - pattern: rand::rngs::SmallRng::seed_from_u64($SEED)
+      - pattern: rand::rngs::SmallRng::from_seed($SEED)
+      - pattern: SmallRng::from_entropy()
+      - pattern: rand::rngs::SmallRng::from_entropy()

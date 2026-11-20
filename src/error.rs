@@ -86,6 +86,10 @@ pub enum PipelineError {
     #[error("kafka error: {0}")]
     Kafka(String),
 
+    /// SAST command-level error (rule resolution, format projection, output writing).
+    #[error("sast error: {0}")]
+    Sast(String),
+
     /// Generic MCP error.
     #[error("mcp error: {0}")]
     Mcp(String),

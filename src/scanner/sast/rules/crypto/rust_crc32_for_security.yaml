@@ -1,0 +1,21 @@
+rules:
+  - id: rust-crc32-for-security
+    message: >
+      CRC32 is a non-cryptographic checksum algorithm (CWE-328). It is not
+      collision-resistant and is trivially reversible; it provides no integrity
+      guarantee against an adversary who can modify data. Never use CRC32 as a
+      message authentication code or security integrity check. Use HMAC-SHA256
+      (hmac + sha2 crates) instead.
+    languages:
+      - regex
+    severity: WARNING
+    metadata:
+      cwe:
+        - CWE-328
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      category: security
+      license: Apache-2.0
+    pattern-regex: '(?i)\b(?:crc32(?:fast)?::(?:hash|checksum)|crc32c::crc32c|Hasher::finish|CRC32\.compute)\s*\('

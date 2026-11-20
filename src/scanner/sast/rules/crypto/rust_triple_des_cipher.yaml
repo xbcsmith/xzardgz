@@ -1,0 +1,26 @@
+rules:
+  - id: rust-triple-des-cipher
+    message: >
+      Triple-DES (TdesEde2 / TdesEde3) is a deprecated cipher vulnerable to the
+      SWEET32 birthday attack (CWE-327) due to its 64-bit block size. Encrypting
+      more than a few gigabytes with the same key exposes plaintext. Use
+      AES-256-GCM or ChaCha20-Poly1305 instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - des
+    pattern-either:
+      - pattern: TdesEde2::new_from_slice($KEY)
+      - pattern: TdesEde3::new_from_slice($KEY)
+      - pattern: des::TdesEde2::new_from_slice($KEY)
+      - pattern: des::TdesEde3::new_from_slice($KEY)

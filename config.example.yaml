@@ -89,6 +89,33 @@ scanner:
     - "node_modules"
 
 # ---------------------------------------------------------------------------
+# SAST engine configuration
+# Controls file size limits, timeouts, and parallelism for the SAST engine.
+# Used by the `xzardgz sast scan` subcommand.
+# ---------------------------------------------------------------------------
+sast:
+  max_file_bytes: 5242880
+  rule_timeout_ms: 5000
+  max_matches_per_file: 100
+  jobs: 0
+
+# ---------------------------------------------------------------------------
+# SAST scan configuration
+# Controls which rulesets are loaded, the severity threshold, and output formats.
+# Used by the `xzardgz sast scan` subcommand and the sast_scan plugin.
+# ---------------------------------------------------------------------------
+sast_scan:
+  enabled: true
+  rulesets:
+    - builtin:crypto
+    - builtin:security
+  severity_threshold: warning
+  max_findings: 500
+  report_formats:
+    - json
+    - sarif
+
+# ---------------------------------------------------------------------------
 # Git
 # Options for cloning and preparing repositories.
 # ---------------------------------------------------------------------------

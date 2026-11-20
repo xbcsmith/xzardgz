@@ -1,0 +1,26 @@
+rules:
+  - id: rust-openssl-no-verify
+    message: >
+      TLS peer certificate verification is disabled via SslVerifyMode::NONE
+      (CWE-295). Without peer verification, TLS connections are vulnerable to
+      man-in-the-middle attacks by any party who can intercept the connection.
+      Remove SslVerifyMode::NONE and configure a trusted certificate authority
+      store to enable proper certificate chain validation.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-295
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - openssl
+    pattern-either:
+      - pattern: $CTX.set_verify(SslVerifyMode::NONE)
+      - pattern: $CTX.set_verify(SslVerifyMode::empty())
+      - pattern: $CTX.set_verify(openssl::ssl::SslVerifyMode::NONE)

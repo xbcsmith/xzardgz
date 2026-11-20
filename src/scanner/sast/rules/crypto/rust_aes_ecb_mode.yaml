@@ -1,0 +1,30 @@
+rules:
+  - id: rust-aes-ecb-mode
+    message: >
+      AES in ECB mode produces identical ciphertext for identical plaintext
+      blocks, revealing data patterns (CWE-327). ECB mode lacks diffusion across
+      blocks; encrypted images famously preserve visible structure. Use
+      AES-256-GCM (aes-gcm crate) for authenticated encryption or AES-CBC with
+      a random IV plus an HMAC integrity check.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-327
+        - CWE-326
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - aes
+    pattern-either:
+      - pattern: Ecb::<Aes128, _>::new($KEY)
+      - pattern: Ecb::<Aes256, _>::new($KEY)
+      - pattern: ecb::Encryptor::<Aes128>::new($KEY)
+      - pattern: ecb::Encryptor::<Aes256>::new($KEY)
+      - pattern: ecb::Decryptor::<Aes128>::new($KEY)
+      - pattern: ecb::Decryptor::<Aes256>::new($KEY)

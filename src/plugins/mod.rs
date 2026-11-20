@@ -34,6 +34,7 @@
 pub mod context;
 pub mod output;
 pub mod registry;
+pub mod sast_scan;
 pub mod security_review;
 pub mod technical_review;
 pub mod trait_def;

@@ -78,6 +78,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
+
+    /// Run SAST security scanning subcommands.
+    Sast {
+        /// SAST subcommand to execute.
+        #[command(subcommand)]
+        command: SastCommands,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -488,8 +495,49 @@ pub enum McpCommands {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// sast
 // ---------------------------------------------------------------------------
+
+/// Subcommands for the `sast` command group.
+#[derive(Debug, Clone, Subcommand)]
+pub enum SastCommands {
+    /// Scan a directory tree for security issues using builtin and custom rules.
+    Scan(SastScanArgs),
+}
+
+/// Arguments for the `xzardgz sast scan` subcommand.
+///
+/// Performs static application security testing (SAST) on a directory tree,
+/// emitting findings in the requested format to stdout or a file.
+#[derive(Debug, Clone, Args)]
+pub struct SastScanArgs {
+    /// Directory to scan (required).
+    pub path: std::path::PathBuf,
+
+    /// Ruleset identifier or path. Repeatable. Overrides default [builtin:crypto, builtin:security].
+    #[arg(long = "ruleset", value_name = "ID|PATH")]
+    pub ruleset: Vec<String>,
+
+    /// Extra ruleset search directory. Repeatable. Prepended to the search path.
+    #[arg(long = "ruleset-path", value_name = "DIR")]
+    pub ruleset_path: Vec<std::path::PathBuf>,
+
+    /// Output format: json (default), sarif, or cyclonedx.
+    #[arg(long, default_value = "json")]
+    pub format: String,
+
+    /// Write output to FILE instead of stdout.
+    #[arg(long, value_name = "FILE")]
+    pub output: Option<std::path::PathBuf>,
+
+    /// Number of parallel worker threads (0 = automatic).
+    #[arg(long, default_value = "0")]
+    pub jobs: usize,
+
+    /// Minimum severity threshold: info, warning, or error.
+    #[arg(long, default_value = "warning")]
+    pub severity: String,
+}
 
 #[cfg(test)]
 mod tests {

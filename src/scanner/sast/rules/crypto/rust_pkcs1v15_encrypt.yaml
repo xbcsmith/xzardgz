@@ -1,0 +1,26 @@
+rules:
+  - id: rust-pkcs1v15-encrypt
+    message: >
+      RSA PKCS#1 v1.5 encryption (Pkcs1v15Encrypt) is vulnerable to
+      Bleichenbacher padding oracle attacks (CWE-780). An adaptive chosen
+      ciphertext attack can decrypt arbitrary ciphertexts or forge signatures.
+      Use RSAES-OAEP (rsa::Oaep with SHA-256) for encryption instead.
+    languages:
+      - rust
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-780
+        - CWE-327
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+      technology:
+        - rust
+        - rsa
+    pattern-either:
+      - pattern: $KEY.encrypt(&mut $RNG, Pkcs1v15Encrypt, $MSG)
+      - pattern: Pkcs1v15Encrypt.encrypt(&mut $RNG, &$KEY, $MSG)
+      - pattern: rsa::pkcs1v15::Pkcs1v15Encrypt

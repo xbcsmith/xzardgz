@@ -1,0 +1,21 @@
+rules:
+  - id: rust-hardcoded-iv
+    message: >
+      A variable named iv, nonce, or initialization_vector is assigned a
+      fixed byte array literal (CWE-329). Reusing or hardcoding an IV/nonce
+      with the same key enables ciphertext analysis and breaks the semantic
+      security of symmetric encryption. Generate a fresh random IV/nonce for
+      every encryption operation using OsRng.
+    languages:
+      - regex
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-329
+        - CWE-330
+      owasp:
+        - "A02:2021 - Cryptographic Failures"
+      confidence: MEDIUM
+      category: security
+      license: Apache-2.0
+    pattern-regex: '(?i)\b(?:let\s+(?:mut\s+)?|const\s+)(?P<NAME>iv|nonce|initialization_vector|init_vec|ivec)\s*(?::\s*\[[^\]]*\])?\s*=\s*\['

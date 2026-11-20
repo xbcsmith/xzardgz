@@ -1,0 +1,21 @@
+rules:
+  - id: regex-hardcoded-db-url
+    message: >
+      A hardcoded database connection URL containing credentials was detected
+      (CWE-798, CWE-259). Database URLs embedded in source code expose
+      credentials in version control, build logs, error messages, and compiled
+      binaries. Supply connection strings at runtime via environment variables
+      or a secrets manager.
+    languages:
+      - regex
+    severity: ERROR
+    metadata:
+      cwe:
+        - CWE-798
+        - CWE-259
+      owasp:
+        - "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH
+      category: security
+      license: Apache-2.0
+    pattern-regex: '"(?P<URL>(?:postgres|postgresql|mysql|mongodb|redis|mariadb)://[^@"\s]{1,}:[^@"\s]{1,}@[^"\s]+)"'

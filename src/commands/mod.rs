@@ -8,6 +8,8 @@ pub mod plugin;
 pub mod prompts;
 /// Workflow execution command handler.
 pub mod run;
+/// SAST security scan command handler.
+pub mod sast;
 /// Repository scanning command handler.
 pub mod scan;
 /// Watcher mode command handler.

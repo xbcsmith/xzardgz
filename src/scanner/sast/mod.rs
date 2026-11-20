@@ -17,6 +17,7 @@
 
 pub mod ast;
 pub mod config;
+pub mod embedded;
 pub mod engine;
 pub mod error;
 pub mod fingerprint;

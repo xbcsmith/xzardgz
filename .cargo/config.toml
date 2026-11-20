@@ -1,0 +1,16 @@
+# Cargo workspace-level configuration.
+#
+# macOS workaround: rdkafka-sys 4.9.0 (librdkafka 2.10.0) references OpenSSL
+# symbols (_BIO_eof, _OPENSSL_sk_set_cmp_thunks, _OPENSSL_sk_set_copy_thunks)
+# that are not exported as public symbols in OpenSSL >= 3.6. The
+# -undefined dynamic_lookup linker flag defers resolution to runtime so that
+# the test binary can link. This is benign here because the Kafka SSL code
+# paths are not exercised by the test suite.
+#
+# Remove this section once rdkafka-sys is updated to support OpenSSL 4.x.
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
