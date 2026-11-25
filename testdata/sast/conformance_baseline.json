@@ -1,0 +1,31 @@
+{
+  "version": "1",
+  "generated_at": "2026-11-25",
+  "entries": {
+    "regex-hardcoded-const-secret": "pass",
+    "regex-hardcoded-db-url": "pass",
+    "regex-hardcoded-secret-assignment": "pass",
+    "rust-aes-ecb-mode": "pass",
+    "rust-blowfish-cipher": "pass",
+    "rust-crc32-for-security": "pass",
+    "rust-des-cipher": "pass",
+    "rust-hardcoded-iv": "pass",
+    "rust-hardcoded-password-field": "skipped(no fixture)",
+    "rust-hardcoded-salt": "pass",
+    "rust-md5-usage": "pass",
+    "rust-openssl-no-verify": "pass",
+    "rust-pbkdf2-low-rounds": "pass",
+    "rust-pkcs1v15-encrypt": "pass",
+    "rust-rc4-cipher": "pass",
+    "rust-reqwest-invalid-certs": "pass",
+    "rust-reqwest-invalid-hostnames": "pass",
+    "rust-sha1-hmac": "pass",
+    "rust-sha1-usage": "pass",
+    "rust-shell-command-injection": "pass",
+    "rust-triple-des-cipher": "pass",
+    "rust-unsafe-ffi-call": "skipped(no fixture)",
+    "rust-unsafe-transmute": "pass",
+    "rust-weak-prng": "pass",
+    "rust-weak-rsa-key": "pass"
+  }
+}

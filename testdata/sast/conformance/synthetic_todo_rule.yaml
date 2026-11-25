@@ -1,0 +1,9 @@
+rules:
+  - id: synthetic-todo-rule
+    message: Synthetic todo rule for conformance harness unit tests
+    languages:
+      - regex
+    severity: WARNING
+    metadata:
+      license: Apache-2.0
+    pattern-regex: 'SYNTHETIC_TODO_MATCH'

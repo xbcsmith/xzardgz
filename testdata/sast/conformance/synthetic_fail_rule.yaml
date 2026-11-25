@@ -1,0 +1,9 @@
+rules:
+  - id: synthetic-fail-rule
+    message: Synthetic fail rule for conformance harness unit tests
+    languages:
+      - regex
+    severity: WARNING
+    metadata:
+      license: Apache-2.0
+    pattern-regex: 'SYNTHETIC_FALSE_POSITIVE_42'

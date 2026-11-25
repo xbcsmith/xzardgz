@@ -17,6 +17,7 @@
 
 pub mod ast;
 pub mod config;
+pub mod conformance;
 pub mod embedded;
 pub mod engine;
 pub mod error;
